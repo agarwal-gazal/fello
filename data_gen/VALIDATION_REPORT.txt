@@ -1,0 +1,98 @@
+
+=== Volumes ===============================================================
+accounts: 5,000   event rows: 201,987   all rows: 290,245
+tenant_id
+tnt_beacon    1000
+tnt_lumen     2300
+tnt_parcel    1700
+
+=== Renewal outcomes (resolved) ===========================================
+outcome
+renewed       0.717
+churned       0.141
+expanded      0.103
+downgraded    0.039
+churn or downgrade by tenant:
+tenant_id
+tnt_beacon    0.156
+tnt_lumen     0.177
+tnt_parcel    0.199
+pending renewals: 2086  (hidden: {'renewed': 1462, 'churned': 333, 'expanded': 206, 'downgraded': 85})
+active accounts: 3,799
+
+=== Mess actually present =================================================
+SF duplicate account records:        127 (2.5%)
+SF websites missing:                 9.2%
+SF contacts with no email:           4.1%
+Stripe customers carrying SF id:     {'tnt_beacon': 0.78, 'tnt_lumen': 0.62, 'tnt_parcel': 0.36}
+Stripe test-mode customers:          50
+Stripe duplicate webhook event ids:  302 (2.5%)
+Zendesk tickets w/o organisation:    38.1%
+Zendesk duplicate ticket versions:   407 (3.1%)   [ticket ids also collide ACROSS tenants: 3053 rows]
+Product events late >1d:             8.6%   (>14d backfill: 1.9%)
+Product events duplicated:           1.4%
+Product events with naive timestamp: 3.9%
+Product events future-dated vs sync: 0.88%
+Product events missing workspace:    0.9%
+Gmail bounce messages:               38
+Gmail rows landing in bulk backfill: 7.7%
+
+=== Data richness per account (rows across product+tickets+gmail) =========
+          count   mean    std  min   10%   50%    90%     max
+segment                                                      
+ent       451.0  150.9  174.1  0.0  11.0  86.0  353.0  1302.0
+mid      1752.0   39.7   42.7  0.0   3.0  26.0   93.0   322.0
+smb      2797.0    8.8    9.9  0.0   0.0   6.0   22.0    93.0
+accounts with <5 total activity rows: 29.5%   (zero: 7.7%)
+missing a whole source: product 5.1%, zendesk 8.1%
+
+=== Does the data carry signal? AUC of simple as-of features (R - 60d) vs churn/downgrade 
+resolved renewals evaluated: 5,592  (positive rate 17.6%)
+  [all accounts, n=5592]  usage_drop: 0.46  tickets_90d: 0.58  bad_tickets_180d: 0.56  failed_payments_180d: 0.51  days_since_inbound: 0.55  inbound_90d: 0.46
+  [mid + enterprise, n=2509]  usage_drop: 0.44  tickets_90d: 0.61  bad_tickets_180d: 0.60  failed_payments_180d: 0.50  days_since_inbound: 0.57  inbound_90d: 0.43
+  [accounts with >=6 product events in prior 112d, n=1355]  usage_drop: 0.43  tickets_90d: 0.59  bad_tickets_180d: 0.58  failed_payments_180d: 0.50  days_since_inbound: 0.52  inbound_90d: 0.47
+  (0.50 = no signal. Values <0.5 mean 'higher value => LESS risk', as expected for usage_drop and inbound_90d.)
+
+  CEILING (knowing hidden pre-renewal health):       test AUC 0.813
+  Plain logistic regression on 8 as-of features:     test AUC 0.666   (train 1,984 / test 3,608)
+  ...mid+enterprise only:  ceiling 0.836   logreg 0.698
+
+=== Point-in-time hazards present in the raw data =========================
+no raw record is synced after the cutoff: OK
+share of a week's product events already in the warehouse at 6am the next Monday: mean 94.5%, worst week 92.3%
+  -> features computed 'as of Monday 06:00' under-count the week that just ended; a model trained on event time (hindsight) but served on arrival time would be mis-calibrated.
+Gmail: 33% of early-window messages were synced >14d after they were sent (mailbox connected late -> bulk backfill).
+active accounts per CSM: median 118 (min 111, max 128); accounts still owned by an inactive CSM: 155
+
+=== How hard are the cross-system joins? (naive approaches) ===============
+Stripe->Salesforce via metadata.salesforce_id:   57%
+Stripe->Salesforce via exact (lower-cased) name: 61%
+Zendesk org->Salesforce via external_id:         40%
+Zendesk org->Salesforce via exact name:          59%
+Product workspace->Salesforce via crm_account_id:35%
+near-identical company names that are DIFFERENT companies (fuzzy-match traps): 29 pairs
+accounts with an alias email domain:             4.9%
+cold-start accounts (<100 days old):             12.1%
+
+=== Planted cases: 4-week buckets leading to the renewal (product events | tickets | inbound emails) 
+decoy_quiet_renewed        lum-00437  renews 2026-09-18  outcome=renewed  pre-renewal health=0.787
+   product  (t-52w..t-0): [0, 0, 0, 0, 0, 1, 2, 1, 0, 0, 0, 0, 1]
+   tickets               : [0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0]
+   inbound emails        : [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+   built-in mess         : []
+decoy_declining_renewed    lum-00703  renews 2026-08-27  outcome=renewed  pre-renewal health=0.313
+   product  (t-52w..t-0): [13, 6, 8, 3, 7, 4, 7, 4, 5, 1, 0, 2, 1]
+   tickets               : [0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 1, 1]
+   inbound emails        : [0, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 1]
+   built-in mess         : []
+lost_A                     lum-01289  renews 2026-08-14  outcome=churned  pre-renewal health=0.218
+   product  (t-52w..t-0): [10, 7, 11, 1, 3, 7, 5, 3, 4, 1, 1, 0, 0]
+   tickets               : [0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 2, 2]
+   inbound emails        : [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0]
+   built-in mess         : ['no_zd_org', 'no_stripe_sf_link']
+lost_B                     lum-02031  renews 2026-09-09  outcome=churned  pre-renewal health=0.107
+   product  (t-52w..t-0): [20, 5, 7, 9, 7, 10, 6, 9, 1, 1, 1, 0, 1]
+   tickets               : [0, 2, 0, 0, 0, 1, 0, 1, 2, 1, 2, 1, 3]
+   inbound emails        : [0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0]
+   built-in mess         : ['workspace_name_mismatch']
+
