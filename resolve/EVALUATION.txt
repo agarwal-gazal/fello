@@ -1,0 +1,78 @@
+====================================================================================================
+ENTITY RESOLUTION: evaluation against the answer key
+====================================================================================================
+
+[1] Salesforce de-duplication: 5,127 records, 5,000 real companies -> 5,000 accounts predicted
+    pairwise precision 1.0000   pairwise recall 1.0000   (true duplicate pairs 127, found 127, wrongly merged 0)
+    duplicate groups left split: 0
+
+[2] Links by source entity (noise = test-mode / internal records, which must NOT be linked)
+    entity                  real   linked  coverage  precision  recall  noise  noise linked
+    stripe_customer        5,000    4,999    100.0%    100.00%  100.0%     50             0
+    zendesk_org            3,556    3,556    100.0%    100.00%  100.0%      0             0
+    product_workspace      5,183    5,183    100.0%    100.00%  100.0%      3             0
+    zendesk_ticket        12,705   12,144     95.6%    100.00%   95.6%      0             0
+    gmail_message         27,450   27,208     99.1%    100.00%   99.1%  2,280             0
+
+[3] Precision by method (which evidence can be trusted?)
+    entity              method                         links  precision  conflicts
+    stripe_customer     domain_contact                   154    100.00%          0
+    stripe_customer     domain_website                 1,651    100.00%          0
+    stripe_customer     key                            2,851    100.00%          0
+    stripe_customer     name                             325    100.00%          2
+    stripe_customer     name_fuzzy                        11    100.00%          0
+    stripe_customer     person_contact_freemail            7    100.00%          0
+    zendesk_org         domain_contact                   128    100.00%          0
+    zendesk_org         domain_linked                      2    100.00%          0
+    zendesk_org         domain_website                 1,672    100.00%          0
+    zendesk_org         key                            1,418    100.00%          0
+    zendesk_org         name                             322    100.00%          0
+    zendesk_org         name_fuzzy                         5    100.00%          0
+    zendesk_org         vote                               9    100.00%          0
+    product_workspace   domain_contact                    11    100.00%          0
+    product_workspace   domain_linked                      2    100.00%          0
+    product_workspace   domain_website                 2,503    100.00%          0
+    product_workspace   key                            1,823    100.00%          0
+    product_workspace   name                             591    100.00%          4
+    product_workspace   person_contact                   243    100.00%          0
+    product_workspace   person_contact_freemail            1    100.00%          0
+    product_workspace   vote                               9    100.00%          0
+    zendesk_ticket      domain_contact                   206    100.00%          0
+    zendesk_ticket      domain_linked                      3    100.00%          0
+    zendesk_ticket      domain_website                 3,554    100.00%          0
+    zendesk_ticket      key                            7,874    100.00%          0
+    zendesk_ticket      person_contact                   179    100.00%          0
+    zendesk_ticket      person_contact_freemail          322    100.00%          0
+    zendesk_ticket      person_user                        1    100.00%          0
+    zendesk_ticket      person_user_freemail               5    100.00%          0
+    gmail_message       domain_contact                   115    100.00%          0
+    gmail_message       domain_website                21,593    100.00%          0
+    gmail_message       person_contact                 2,370    100.00%          0
+    gmail_message       person_contact_freemail        2,960    100.00%          0
+    gmail_message       person_user                        9    100.00%          0
+    gmail_message       person_user_freemail             161    100.00%          0
+
+[4] Wrong links (all of them, up to 12 per entity)
+    stripe_customer: 0 wrong (0 onto a name-twin of the right account)
+    zendesk_org: 0 wrong (0 onto a name-twin of the right account)
+    product_workspace: 0 wrong (0 onto a name-twin of the right account)
+    zendesk_ticket: 0 wrong (0 onto a name-twin of the right account)
+    gmail_message: 0 wrong (0 onto a name-twin of the right account)
+
+[5] Why real records are NOT linked (this is the honest coverage gap)
+    stripe_customer          1 unlinked: free_mail_no_person_match=1
+    zendesk_ticket         561 unlinked: free_mail_no_person_match=551, no_evidence=10
+    gmail_message          242 unlinked: free_mail_no_person_match=242
+    gmail noise (newsletters, internal): 2,280 messages, 0 wrongly linked
+
+[6] Name twins (different companies with near-identical names): 29 pairs in the data
+    twin pairs falsely merged in Salesforce: 0
+
+[7] The planted cases: are all their signals attributed to the right account?
+    decoy_quiet_renewed        lum-00437: gmail message 1/1; product workspace 1/1; stripe customer 1/1; zendesk org 1/1; zendesk ticket 5/5
+    decoy_declining_renewed    lum-00703: gmail message 28/28; product workspace 2/2; stripe customer 1/1; zendesk ticket 6/7
+    lost_A                     lum-01289: gmail message 18/18; product workspace 1/1; stripe customer 1/1; zendesk ticket 11/14
+    lost_B                     lum-02031: gmail message 18/18; product workspace 1/1; stripe customer 1/1; zendesk org 1/1; zendesk ticket 17/17
+    lost-renewal tickets by link method: {'key': 16, 'domain_website': 11, 'unresolved': 3, 'domain_contact': 1}
+
+[8] Accounts (of 5,000) with at least one correctly attributed record per source: gmail_message=2,871, product_workspace=4,745, stripe_customer=4,999, zendesk_org=3,556, zendesk_ticket=3,221

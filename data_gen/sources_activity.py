@@ -201,10 +201,12 @@ def emit_zendesk(t: TenantConfig, accs: list[Account], rng, links: list, cal: di
                 s = sync_time(rng, avail_dt, p_late=.03, late_days=(3, 30))
                 if s <= EXPORT_AT:
                     out["tickets"].append({**rec, "_synced_at": iso_z(s)})
+                    links.append((t.tenant_id, "zendesk_ticket", str(tid), a.true_id))
                 if solved_ok and rng.random() < MESS["zd_dup_version"]:      # earlier version also exported
                     old = {**rec, "status": "open", "updated_at": iso_z(dt + timedelta(hours=2)),
                            "solved_at": None, "satisfaction_rating": {"score": "unoffered"}}
                     out["tickets"].append({**old, "_synced_at": iso_z(min(dt + timedelta(hours=float(rng.uniform(3, 30))), EXPORT_AT))})
+                    links.append((t.tenant_id, "zendesk_ticket", str(tid), a.true_id))
     return out
 
 
@@ -367,6 +369,7 @@ def emit_gmail(t: TenantConfig, accs: list[Account], csms: list[dict], rng, link
                 conn = at(WINDOW_START + timedelta(days=int(rng.integers(30, 700))))
             mailbox[c["user_id"]] = dict(email=c["email"], name=c["name"], connected=conn, n=0)
     csm_by_id = {c["user_id"]: c for c in csms}
+    cur = ["NOISE"]          # true account of the messages currently being emitted (answer key only)
 
     def push(mb_id, dt, from_name, from_addr, to, subject, snippet, inbound, thread):
         mb = mailbox[mb_id]
@@ -379,8 +382,10 @@ def emit_gmail(t: TenantConfig, accs: list[Account], csms: list[dict], rng, link
         if s > EXPORT_AT:
             return
         mb["n"] += 1
+        mid = _hex(rng)
+        links.append((t.tenant_id, "gmail_message", mid, cur[0]))
         msgs.append({
-            "id": _hex(rng), "threadId": thread, "labelIds": ["INBOX"] if inbound else ["SENT"],
+            "id": mid, "threadId": thread, "labelIds": ["INBOX"] if inbound else ["SENT"],
             "snippet": snippet, "internalDate": str(int(dt.timestamp() * 1000)),
             "payload": {"headers": [
                 {"name": "From", "value": f"{from_name} <{from_addr}>"},
@@ -388,6 +393,7 @@ def emit_gmail(t: TenantConfig, accs: list[Account], csms: list[dict], rng, link
             "_mailbox": mb["email"], "_synced_at": iso_z(s)})
 
     for a in accs:
+        cur[0] = a.true_id
         mask = active_mask(a)
         h = a.h_obs(2)
         wtr = a.weeks_to_renewal()
@@ -461,6 +467,7 @@ def emit_gmail(t: TenantConfig, accs: list[Account], csms: list[dict], rng, link
                          False, th)
 
     # noise: internal mail, vendors, newsletters (no customer attached)
+    cur[0] = "NOISE"
     for mb_id, mb in mailbox.items():
         for _ in range(int(MESS["gmail_noise"] * mb["n"]) + 3):
             dt = from_epoch(float(business_times(rng, 1, int(rng.integers(0, N_WEEKS - 1)), 0.0)[0]))

@@ -34,6 +34,24 @@ sandbox, where PyPI is unreachable (proxy 403), so no Postgres driver could be i
 control characters as quote/delimiter, because COPY's default text format mangles backslashes in JSON (tested).
 The application layer will need a real driver; that is a deploy-time `pip install`, not a design constraint.
 
+## D6. Entity resolution: evidence ladder with confidence, never a forced match (day 2)
+- Every link stores `method`, `confidence`, `conflict` and, when unlinked, a `reason`. A CSM-facing number can always be traced
+  back to "this ticket was attributed to this account because of X".
+- Ladder: explicit key (1.0) > website/contact domain (.90-.95) > person's email (.90) > workspace user vote (.80) > name (.85) > fuzzy (.70).
+  Name is consulted whenever the best company evidence is below .85, not only when there is none.
+- **A personal address (gmail.com...) is a person, not a company.** Free-mail person matches are capped at .75 so company evidence overrules
+  them. Before this, 9 records were wrongly attributed that way.
+- **Wrong is worse than missing.** A bad link feeds another account's features; an unlinked ticket only lowers coverage. Free-mail senders
+  with no person match stay unlinked (about 550 of 12.7k tickets, 4%), they are reported, not guessed.
+- Salesforce dedupe: same website domain; same normalised name unless websites conflict; typo duplicates (one edit apart, slug length >= 8,
+  no website conflict) corroborated by a shared contact domain, or by the same owner unless the difference is a single substituted letter
+  ("Ivory Ward" vs "Ivory Yard" are different companies; this rule merged them once, the test now guards it).
+- Learned domains: an alias domain seen on an already-linked record becomes evidence for later records, only if unclaimed (never creates an ambiguity).
+- Score on seed 7: 0 wrong links of 61k, perfect dedupe, 0 of 2,333 noise records linked. **Caveat:** the rules were tuned on seed 7, then
+  re-checked on unseen seed 11 with the same result. The answer key is synthetic; real data will have failure modes this one does not.
+  Measure again on a labelled sample of real accounts before trusting it.
+*Cost:* name twins with no other evidence are unlinked rather than guessed; alias domains nobody owns (10 tickets) stay unresolved.
+
 ## Deliberately not done yet
 - Staging/dedupe, entity resolution, features, model, scoring store, agent, UI, tenant isolation (RLS): days 2 to 4.
 - No partitioning or incremental-by-watermark loading: 290k rows load in seconds. First thing to change at 10x is to
