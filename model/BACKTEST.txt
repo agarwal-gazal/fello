@@ -1,0 +1,40 @@
+training table: 66,877 snapshots, 5,880 labelled renewals, 18.0% churned or downgraded, renewals 2023-12-25 to 2026-10-26
+
+WALK-FORWARD BACKTEST (train on renewals completed before the fold; test on the next 6 months)
+        fold   train    test   base | model AUC  PR-AUC   Brier    ECE | boost AUC | rule AUC
+  2025-04-14  19,789  12,444  0.157 |     0.612   0.274  0.1300  0.052 |     0.615 |    0.553
+  2025-10-13  32,173  15,744  0.175 |     0.652   0.314  0.1365  0.019 |     0.644 |    0.557
+  2026-04-13  47,917  18,540  0.197 |     0.665   0.364  0.1471  0.022 |     0.664 |    0.561
+
+  pooled over all folds: AUC 0.647, PR-AUC 0.322 (base rate 0.179), Brier 0.1391 vs 0.1470 for always guessing the base rate
+
+BY HORIZON (how far before the renewal the snapshot was taken; further out = less is observable yet)
+   weeks out   model   boost    rule  top10% precision  top10% captures
+           4   0.710   0.711   0.600             46.4%            25.9%
+           8   0.689   0.688   0.587             48.7%            27.2%
+          12   0.664   0.667   0.561             45.6%            25.5%
+          16   0.642   0.634   0.542             38.2%            21.3%
+          24   0.597   0.594   0.529             28.2%            15.7%
+
+BY TENANT AND SEGMENT (a single global model is an assumption: does it hold for each?)
+  tenant tnt_beacon   n=  776 base 0.159  AUC@8w 0.708   mean predicted 0.167
+  tenant tnt_lumen    n=1,851 base 0.175  AUC@8w 0.684   mean predicted 0.176
+  tenant tnt_parcel   n=1,277 base 0.198  AUC@8w 0.683   mean predicted 0.189
+  segmen Enterprise   n=  347 base 0.141  AUC@8w 0.774   mean predicted 0.128
+  segmen Mid-Market   n=1,386 base 0.162  AUC@8w 0.713   mean predicted 0.164
+  segmen SMB          n=2,171 base 0.196  AUC@8w 0.651   mean predicted 0.196
+
+CALIBRATION at 8 weeks out (does 'a 30% risk' mean 30%?)
+  predicted [0.0, 0.1)     n=1,001   mean predicted 0.068   actual 0.082
+  predicted [0.1, 0.2)     n=1,713   mean predicted 0.146   actual 0.142
+  predicted [0.2, 0.3)     n=  713   mean predicted 0.237   actual 0.226
+  predicted [0.3, 0.4)     n=  233   mean predicted 0.346   actual 0.361
+  predicted [0.4, 0.5)     n=  132   mean predicted 0.446   actual 0.462
+  predicted [0.5, 1.01)    n=  112   mean predicted 0.630   actual 0.607
+  expected calibration error 0.016
+
+THE PRODUCT METRIC: each CSM's top 10 accounts renewing in the window, 8 weeks out
+  precision in the CSM's top 10: model 48.9%  boost 46.2%  rule 34.3%  random (avg CSM base rate) 18.4%
+  share of all at-risk renewals that land in some CSM's top 10: model 26.0%  rule 18.2%
+
+final model: 84 inputs, fitted on renewals before 2026-10-13 -> model/artifacts/model.pkl

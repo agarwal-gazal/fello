@@ -52,6 +52,29 @@ The application layer will need a real driver; that is a deploy-time `pip instal
   Measure again on a labelled sample of real accounts before trusting it.
 *Cost:* name twins with no other evidence are unlinked rather than guessed; alias domains nobody owns (10 tickets) stay unresolved.
 
+## D7. Labels come from Stripe; the CRM only supplies the renewal date (day 2)
+CRM opportunities are never reliably closed: 73 of 867 cancellations (8%) sit on a still-open opportunity, and 335 open
+opportunities have dates in the past. Outcome = Stripe `subscription.deleted` or a >= 25% seat cut within 3 days of the renewal
+date; renewals younger than 14 days are `pending` (late events have not landed). Checked against the answer key: all 867 churns
+and 231/232 downgrades right. Renewals more than ~4 months out have no CRM opportunity yet, so scoring projects them
+from the last anniversary (flagged as projected).
+
+## D8. Point-in-time features: `known_at`, not event time (day 2)
+Every feature uses only facts with `event_time <= S AND known_at <= S`. The leak test hides every row that arrived after a
+snapshot and recomputes: features must be identical. It caught a real bug on its first run: an account with no product data
+got NaN or 1.0 for the same feature depending on whether data existed *later*. Excluded on purpose: CRM ARR and contract end
+(current-state, 25% stale), opportunity stage (the outcome), `cancel_at_period_end` (the customer's own notice: the CSM already
+sees it, and a model living on it is not an early-warning system), ticket attributes younger than 14 days (CSAT/status mature late).
+
+## D9. Logistic regression is the production model; boosting is a reported challenger (day 2)
+Walk-forward backtest (train on renewals finished before each 6-month fold, never random splits). Pooled AUC 0.647; 0.71 at 4 weeks
+out, 0.69 at 8, 0.60 at 24. Boosting is within noise (0.647 vs 0.646 in the last two folds), so the model whose every score is a
+sum of readable contributions wins. Calibration error 0.016. In a CSM's top 10 (8 weeks out) 49% are real vs 18% by chance and 34%
+for a "tickets + cancellation requests" rule. The data-generating ceiling is 0.81 (knowing hidden health); the observable-feature
+logistic in the data validator got 0.67, so we are at that level and have not found a free lunch. Finer 4-week trajectory buckets, log
+transforms and an ensemble all moved AUC by < 0.01. First-fold AUC is only 0.61: with one year of history the model is weak.
+*Not done:* per-tenant models (tenant AUCs are 0.68-0.71 under one global model), uncertainty intervals, sample reweighting.
+
 ## Deliberately not done yet
 - Staging/dedupe, entity resolution, features, model, scoring store, agent, UI, tenant isolation (RLS): days 2 to 4.
 - No partitioning or incremental-by-watermark loading: 290k rows load in seconds. First thing to change at 10x is to
