@@ -1,6 +1,7 @@
+ASOF ?= 2026-10-26
 DATABASE_URL ?= postgresql://fello:fello@localhost/fello_health
 
-.PHONY: data validate load stage resolve evaluate core features train test all
+.PHONY: data validate load stage resolve evaluate core features train score planted test all
 data:      ## generate the synthetic raw data (deterministic, ~40s)
 	python -m data_gen.generate --out data --seed 7
 validate:  ## evidence that the data is realistic and carries signal
@@ -19,6 +20,10 @@ features:  ## point-in-time training snapshots
 	DATABASE_URL=$(DATABASE_URL) python -m features.build_features
 train:     ## fit + walk-forward backtest -> model/BACKTEST.txt
 	DATABASE_URL=$(DATABASE_URL) python -m model.train
+score:     ## score everyone renewing in 26 weeks, as of a Monday (ASOF=2026-10-26)
+	DATABASE_URL=$(DATABASE_URL) python -m scoring.score --asof $(ASOF)
+planted:   ## would the system have caught the two lost renewals, and how early?
+	DATABASE_URL=$(DATABASE_URL) python -m scoring.evaluate_planted --data data
 test:      ## loader tests (needs a scratch DB: postgresql://fello:fello@localhost/fello_test)
 	python -m unittest discover -s tests -t . -v
 all: data load

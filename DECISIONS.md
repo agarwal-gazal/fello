@@ -75,6 +75,24 @@ logistic in the data validator got 0.67, so we are at that level and have not fo
 transforms and an ensemble all moved AUC by < 0.01. First-fold AUC is only 0.61: with one year of history the model is weak.
 *Not done:* per-tenant models (tenant AUCs are 0.68-0.71 under one global model), uncertainty intervals, sample reweighting.
 
+## D10. Scoring store, bands and event alerts (day 3)
+- Each Monday run scores customers whose next renewal is within 26 weeks (beyond the last CRM opportunity the next anniversary is
+  *projected* and flagged). Every row stores run id, model version, the full feature vector, the reasons and the alerts, so any
+  number a CSM sees can be recomputed (tested: stored risk == model(stored features)). Re-running the same Monday replaces its rows.
+- Bands on calibrated risk: red >= 0.30 (about 13% of accounts, roughly what one CSM can personally work), yellow >= 0.18 (the base rate),
+  green below. These are capacity choices, not statistical facts; the VP should set them.
+- Reasons: a logistic score decomposes exactly into per-feature contributions (tested to 1e-9), summed into a dozen human concepts,
+  each rendered with the account's real numbers.
+- **Alerts sit beside the score, not inside it.** A customer writing "considering cancelling" is a statement, not a pattern. Alerts set a
+  *floor* on priority from measured outcomes (cancellation ticket: 41.6% churn/downgrade, n=154, floor 0.40) and never alter `risk`.
+  Added after the planted-case test showed lost_A was only yellow (0.19) the Monday after its cancellation ticket. Honest reading: that
+  ticket arrived 8 weeks and 1 day before the renewal, so 7 weeks is the earliest any system could act on it. Earlier decline was invisible
+  (no inbound email for 255 days, 3 of its tickets from personal addresses stayed unlinked). I did NOT retune the model to this account.
+- Planted cases (model trained before either renewal, weekly from 26 weeks out): lost_B top-10 from 11 weeks, red from 9;
+  lost_A top-10 and red from 7; decoy_declining and decoy_quiet never red. The "at least 8 weeks" target is met for one of two.
+- Accounts whose CSM has left the company (55 in the last run) stay in the output, flagged, for routing to a manager.
+*Cost:* alerts and the model can disagree, by design; the UI must show both.
+
 ## Deliberately not done yet
 - Staging/dedupe, entity resolution, features, model, scoring store, agent, UI, tenant isolation (RLS): days 2 to 4.
 - No partitioning or incremental-by-watermark loading: 290k rows load in seconds. First thing to change at 10x is to

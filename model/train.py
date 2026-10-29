@@ -28,16 +28,12 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import FunctionTransformer, StandardScaler
 
 from resolve.io import read_df
-from .design import KEYS, design, numeric_columns
+from .design import KEYS, design, numeric_columns, signlog
 
 warnings.filterwarnings("ignore")
 FOLDS = ["2025-04-14", "2025-10-13", "2026-04-13"]          # test windows start here, each runs 6 months
 END = "2027-01-01"
 HORIZONS = (4, 8, 12, 16, 24)
-
-
-def signlog(a):
-    return np.sign(a) * np.log1p(np.abs(a))
 
 
 def make_logit(C=0.03):

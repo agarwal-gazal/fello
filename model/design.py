@@ -4,6 +4,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+def signlog(a):
+    """Defined here (not in the training script) so a pickled model can be loaded by any process."""
+    return np.sign(a) * np.log1p(np.abs(a))
+
+
 KEYS = ["tenant_id", "account_id", "snap_at", "renewal_date", "outcome", "segment", "y"]
 SEGMENTS = ["smb", "mid_market", "enterprise"]
 # human-readable names and groups: drivers shown to a CSM are built from these
