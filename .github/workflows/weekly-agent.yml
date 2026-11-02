@@ -1,0 +1,36 @@
+# Proof that the Monday agent runs unattended, using nothing but GitHub (no external database).
+# Every Monday this builds a fresh smaller copy of the system in a throwaway Postgres, lets the scheduler run the last Mondays by itself,
+# and prints the run table. It is a demonstration of unattended operation, NOT production: a real deployment keeps one persistent
+# database (see deploy/DEPLOY.md) so history accumulates. Press "Run workflow" to trigger it by hand.
+name: weekly-agent
+on:
+  schedule:
+    - cron: "0 1 * * 1"
+  workflow_dispatch: {}
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env: {POSTGRES_USER: fello, POSTGRES_PASSWORD: fello, POSTGRES_DB: fello_health}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U fello" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://fello:fello@localhost:5432/fello_health
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: pip install -r deploy/requirements.txt
+      - name: build the system (smaller dataset) and let the scheduler run the recent Mondays
+        run: SCALE=0.3 APP_DB_PASSWORD=fello bash deploy/bootstrap.sh
+      - name: the scheduler again (must be a no-op: those Mondays are already done)
+        run: python -m agent.scheduler --once
+      - name: what the agent did
+        run: |
+          psql "$DATABASE_URL" -X -c "select run_id, asof::date, status, n_scored, n_changes, n_drafts from agent.run order by asof"
+          psql "$DATABASE_URL" -X -c "select kind, status, count(*) from agent.draft group by 1,2 order by 1,2"

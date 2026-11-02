@@ -1,0 +1,23 @@
+# Runs the whole test suite on every push. Needs nothing but GitHub: Postgres runs as a service container.
+name: ci
+on: [push, workflow_dispatch]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env: {POSTGRES_USER: fello, POSTGRES_PASSWORD: fello, POSTGRES_DB: fello_health}
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U fello" --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.13"}
+      - run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - run: pip install -r deploy/requirements.txt
+      - name: scratch database for tests
+        run: PGPASSWORD=fello psql -h localhost -U fello -d fello_health -c "create database fello_test"
+      - run: python -m unittest discover -s tests -t . -v
