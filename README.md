@@ -19,7 +19,7 @@ One-page brief (written before the code): <https://claude.ai/artifact/HdLmEZf2Ex
 | Tenant isolation with Postgres row-level security | **Verify before submitting.** Section 9. |
 | CSM interface (`ui.server`) | **Verify before submitting.** Section 10. |
 | Live deployment and demo logins | **Verify before submitting.** Section 11 has placeholders. |
-| Loom walkthrough | Not recorded yet. Script in [`docs/LOOM_SCRIPT.md`](docs/LOOM_SCRIPT.md). |
+| Loom walkthrough | Not recorded yet. |
 
 Anything in sections 8 to 11 that does not match what is actually running should be fixed or deleted before this goes out.
 
