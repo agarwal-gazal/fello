@@ -15,13 +15,12 @@ One-page brief (written before the code): <https://claude.ai/artifact/HdLmEZf2Ex
 | Point-in-time features with a leak test | Built, tested |
 | Model, walk-forward backtest, scoring store, reasons, event alerts | Built, tested |
 | Planted-case backtest (the two lost renewals) | Built, results below |
-| Monday agent (`agent.*`), approval queue | **Verify before submitting.** Section 8 is written from the agreed contract. |
-| Tenant isolation with Postgres row-level security | **Verify before submitting.** Section 9. |
-| CSM interface (`ui.server`) | **Verify before submitting.** Section 10. |
-| Live deployment and demo logins | **Verify before submitting.** Section 11 has placeholders. |
+| Monday agent (`agent.*`), approval queue | Built, tested (18 tests). Section 8. |
+| Tenant isolation with Postgres row-level security | Built, tested (11 tests). Section 9 lists what is not covered. |
+| CSM interface (`ui.server`) | Built, tested (17 tests), screenshots in `ui/screens/`. Section 10. |
+| Live deployment | **Not deployed.** Runs locally. Deploy files and steps are in `deploy/`. Section 11. |
 | Loom walkthrough | Not recorded yet. |
 
-Anything in sections 8 to 11 that does not match what is actually running should be fixed or deleted before this goes out.
 
 ## 1. Results, stated plainly
 
@@ -143,35 +142,59 @@ The full reasoning is in `DECISIONS.md`. The ones a reviewer is most likely to q
 - Whether customers' data may be pooled into one model is a contractual question, not a technical one. It is on my list of things I need from the business.
 - Isolation at the database: see section 9.
 
-## 8. The Monday agent (verify before submitting)
+## 8. The Monday agent
 
-Contract, as agreed for this build:
+`python -m agent.run --asof 2026-10-26` does one Monday. `python -m agent.scheduler --once` is the cron-safe entry point.
 
-- A scheduled job runs with no human present. It rescores everyone as of the Monday, compares with the previous run, and writes what changed (new red, moved up, new alert, newly silent).
-- For each account that changed, it drafts a short note for the CSM (why this account, with the real numbers) and a suggested outreach email.
-- Tables: `agent.run` (one row per execution), `agent.change` (what moved), `agent.draft` (the notes and emails).
-- **Drafts are only ever created as `pending`. A person approves or rejects. The agent has no code path that sends mail.**
-- Commands: `python -m agent.run --asof 2026-10-26` for one run, `python -m agent.scheduler --once` for one scheduler tick.
-- Re-running the same Monday must replace its rows, not duplicate them (the scoring store already does this by run id).
-- If a run fails part way, the earlier run stays the one the UI shows, and the failure is recorded in `agent.run`.
+What a run does, in order:
 
-Please check against the code: the table and column names, whether drafts are templated or LLM-written (the brief says an LLM may only phrase computed facts, never produce a score), and what exactly happens on failure.
+1. Scores everyone renewing within 26 weeks, as of that Monday, and stores the result (`scoring.score`).
+2. Compares with the previous stored run and writes `agent.change` rows: `entered_red`, `left_red`, `new_alert`, `risk_jump` (up by 0.10 or more, suppressed if the model changed between the runs), `csm_departed`. The first run is a baseline and has no changes.
+3. Drafts text into `agent.draft`. Two kinds: `csm_note` (why this account, with the real numbers) and `customer_email`. Customer emails are only drafted for red accounts whose CSM still works here, go to a contact from the CRM, never to an address that has bounced, and never mention scores or risk. An at-risk account whose CSM has left gets a routing note instead.
+4. Records the run in `agent.run`.
 
-## 9. Tenant isolation with row-level security (verify before submitting)
+Facts worth knowing:
 
-Contract: the application connects as role `fello_app`, which owns nothing and bypasses nothing. Every request runs `set local app.tenant_id = '<tenant>'`. Row-level security policies on tenant tables allow only rows where `tenant_id = current_setting('app.tenant_id')`. A test connects as `fello_app` for tenant A and asserts that every query against tenant B's rows returns nothing, including joins and the approval queue.
+- **Drafts are templates, not an LLM.** Every sentence comes from the stored drivers and alerts of that score row. A test fails if a draft contains a number or date that is not in its stored `reasons`. An LLM rewrite step could be added later, but it would have to be re-checked against `reasons`.
+- **Drafts are always created `pending`.** A person approves or rejects in the web app. No code in the agent or the app sends email, and a test scans for it.
+- **Re-running a Monday is safe.** Rows are replaced by run id, a unique key stops duplicate drafts, and drafts a person already decided are never touched. A draft for the same account and kind inside 14 days is not repeated. An unreviewed draft older than that is marked rejected by `agent:superseded` and replaced.
+- **The writes to `agent.*` happen in one transaction.** A test checks that a write failing halfway leaves nothing behind.
+- **Failures are loud.** An exception is stored in `agent.run` as `failed` with the error, the process exits non-zero, and a later re-run repairs it.
+- **Known gap:** scoring is saved *before* that transaction. If the agent fails after scoring, the new scores exist and the web app shows them, with no changes or drafts for that Monday until a re-run. A failure before scoring (for example a missing model file) leaves the earlier run as the newest. The fix is to show only runs whose `agent.run` status is `ok`.
+- **The scheduler** works out the latest Monday and runs it only if no `ok` run exists, takes a local file lock, and `--catch-up N` runs missed Mondays oldest first. It uses the data export time as "now" unless `--now wall` is passed, because the data is a frozen export.
+- **Draft volume comes in bursts.** In the demo history, nobody approved anything, so the queue reached 449 drafts in one week. There is no cap per CSM yet.
+- The earlier Mondays in the demo history were scored with the final model, which has seen later outcomes. That history shows the agent working, not a backtest.
 
-Please check: which tables have policies, that no table was missed, and that the test fails if a policy is removed.
+## 9. Tenant isolation with row-level security
 
-## 10. The CSM interface (verify before submitting)
+The web app connects as `fello_app`, a role that owns nothing and cannot bypass security. Every request sets `app.tenant_id` for its transaction (locally, once per `psql` call). Policies allow a row only when its `tenant_id` equals that setting. Policies exist on `score.account_score`, `score.run`, `agent.run`, `agent.change` and `agent.draft`. The pipeline's owner role has its own policy and sees everything. `fello_app` can read the score tables and agent tables, and can update only `status`, `decided_by`, `decided_at` and `edited_body` on a draft. It cannot read `raw`, `stg`, `er` or `core`.
 
-`python -m ui.server --port 8080`. Screens: login, **My week** (the CSM's ranked list with band, reasons, alerts and data notes), **Account** page (score, drivers, the tickets, emails and events behind them), **approval queue** (approve or reject drafts), **manager view** (including accounts whose CSM has left). It is a working interface, not a polished one. The brief said so up front.
+Tests (`tests/test_isolation.py`, 11) connect as `fello_app` and check, for each tenant: only its own rows are visible in each table, guessing another tenant's ids returns nothing, joins, unions and subqueries do not widen the view, with no tenant or a bogus one it sees nothing, it cannot update another tenant's draft, and it cannot insert, delete, disable security or drop a policy.
 
-## 11. Live system (verify before submitting)
+What this does **not** cover:
 
-- URL: `TODO`
-- Demo logins for two tenants: `TODO`
-- Scheduler: `TODO: where it runs and when it last ran unattended`
+- Row-level security is enabled but not *forced* on `score.account_score` and `score.run`. The scoring store loads with `COPY`, which Postgres refuses on a forced table. The app role is not the owner, so it is still filtered. Forcing it needs the loader to stage and then insert.
+- `score.run` and `agent.run` have no `tenant_id` column. A run is visible to a tenant only if that tenant can see at least one of its scored rows.
+- A compromised app server holds the `fello_app` connection and could set another tenant's id. This isolates tenants from bugs in queries, not from a stolen app.
+- The web app also filters by tenant in its own SQL, as a second layer.
+
+## 10. The CSM interface
+
+`python -m ui.server --port 8080` (health check at `/healthz`). Standard library only, server-rendered, no JavaScript framework. Login with a password hashed with scrypt, a signed cookie, CSRF tokens on every POST and a rate limit on login. Two roles:
+
+- **CSM:** *My week* lists their accounts renewing within 26 weeks, ranked by priority, with band, reasons, alerts and data notes, plus what changed since last week. An *account page* shows the risk in plain terms, the drivers and protective factors, alerts with their evidence, data-quality notes (low data, silent account, projected renewal date, departed CSM), a risk-over-time line, and a collapsible "how this was computed" panel with the run id, model version and stored feature vector. The *approval queue* lists drafts with the facts they cite, and lets the CSM approve, reject or edit. Approving only changes the status.
+- **Manager:** a team view with counts by band per CSM and the accounts whose CSM has left.
+
+The account page shows the stored score inputs. It does not list the underlying tickets, emails or events. It is a working interface, not a polished one.
+
+## 11. Live system
+
+**Not deployed.** The whole system runs locally (`make` targets), and the same pipeline runs in GitHub Actions. What exists:
+
+- `deploy/DEPLOY.md` has step-by-step instructions for a Neon database and a Render web service, with a `Dockerfile`, `render.yaml` and `bootstrap.sh` that builds everything inside an empty database. I could not test the Docker build, Render, Neon or the `psycopg` code path here. `bootstrap.sh` was tested against a local database at 5% scale (41 s).
+- `.github/workflows/ci.yml` runs the tests on each push. `.github/workflows/weekly-agent.yml` builds a smaller system in a throwaway database each Monday and runs the scheduler. It shows unattended operation but keeps no history between runs. I wrote both and they are untested until GitHub runs them.
+- The scheduler has run unattended locally for five consecutive Mondays (28 Sep to 26 Oct 2026), all `ok`. Calling it again does nothing.
+- Demo logins come from `python -m ui.seed`: `csm.lumen`, `csm.parcel`, `manager.lumen`, `manager.parcel`. The password comes from `DEMO_PASSWORD`; change it before sharing a URL.
 
 ## 12. What I skipped, on purpose
 
@@ -197,7 +220,7 @@ In the order I expect things to fail:
 5. **Entity resolution** keeps domain and name indexes in memory per tenant and does fuzzy name matching with trigram blocking in Python. It scales to a larger tenant, but ambiguity grows with size: more name twins, more shared domains, more personal addresses. The account id is the earliest-created Salesforce record, so a newly arriving earlier duplicate could change an id. I would introduce a stable surrogate id before putting this near real downstream references.
 6. **One global model** is a defensible choice at three tenants. At a hundred, tenants with different products and very different base rates make per-tenant recalibration, at least, necessary. A new tenant has no history, so cold-start handling matters more than the algorithm.
 7. **Row-level security** adds a predicate to every query. It is cheap when indexes lead with `tenant_id` (the core indexes do), but needs a connection pool that sets the tenant per transaction, never per session.
-8. **The scheduler is a single process.** No leader election, no queue. A second copy running at the same time would be harmless for scoring (rows are replaced by run id) but could write duplicate drafts unless the agent run is made idempotent too. Verify against the agent code.
+8. **The scheduler is a single process.** No leader election, no queue. The lock is a local file, so two machines would not see each other. A second copy of a run is harmless: rows are replaced by run id and a unique key stops duplicate drafts. A real deployment would use a database advisory lock or a queue.
 9. **Human capacity.** More accounts per CSM means longer lists, not better ones. The band thresholds, not the pipeline, are what would actually need rethinking.
 
 ## 14. Tests
@@ -220,9 +243,10 @@ core/         account-keyed facts and renewal labels
 features/     point-in-time features
 model/        training, backtest (BACKTEST.txt), explanations
 scoring/      weekly scoring, alerts, planted-case backtest (PLANTED_CASES.txt)
-agent/        Monday agent            (verify, section 8)
-ui/           CSM interface           (verify, section 10)
+agent/        Monday agent, approval-queue tables, row-level security
+ui/           CSM interface
 tests/        unittest suites
-docs/         architecture diagram, Loom script, submission checklist
+docs/         architecture diagram
 deck/         short slide deck
+deploy/       Dockerfile, Render and GitHub Actions config, DEPLOY.md, bootstrap.sh
 ```
