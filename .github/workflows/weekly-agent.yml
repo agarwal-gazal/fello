@@ -28,7 +28,7 @@ jobs:
       - run: pip install -r deploy/requirements.txt
       - name: build the system (smaller dataset) and let the scheduler run the recent Mondays
         run: SCALE=0.3 APP_DB_PASSWORD=fello bash deploy/bootstrap.sh
-      - name: the scheduler again (must be a no-op: those Mondays are already done)
+      - name: "the scheduler again (must do nothing, those Mondays are already done)"
         run: python -m agent.scheduler --once
       - name: what the agent did
         run: |
