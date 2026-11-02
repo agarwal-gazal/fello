@@ -1,7 +1,7 @@
 ASOF ?= 2026-10-26
 DATABASE_URL ?= postgresql://fello:fello@localhost/fello_health
 
-.PHONY: data validate load stage resolve evaluate core features train score planted test all
+.PHONY: agent isolation secure data validate load stage resolve evaluate core features train score planted test all
 data:      ## generate the synthetic raw data (deterministic, ~40s)
 	python -m data_gen.generate --out data --seed 7
 validate:  ## evidence that the data is realistic and carries signal
@@ -24,6 +24,12 @@ score:     ## score everyone renewing in 26 weeks, as of a Monday (ASOF=2026-10-
 	DATABASE_URL=$(DATABASE_URL) python -m scoring.score --asof $(ASOF)
 planted:   ## would the system have caught the two lost renewals, and how early?
 	DATABASE_URL=$(DATABASE_URL) python -m scoring.evaluate_planted --data data
+agent:     ## the Monday run for one date (ASOF=...), or: python -m agent.scheduler --once --catch-up 4
+	DATABASE_URL=$(DATABASE_URL) python -m agent.run --asof $(ASOF)
+secure:    ## create the app role and apply tenant isolation (row-level security)
+	DATABASE_URL=$(DATABASE_URL) python -m agent.security
+isolation: ## prove a tenant cannot see or change another tenant's data
+	python -m unittest tests.test_isolation tests.test_agent -v
 test:      ## loader tests (needs a scratch DB: postgresql://fello:fello@localhost/fello_test)
 	python -m unittest discover -s tests -t . -v
 all: data load

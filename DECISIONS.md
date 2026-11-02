@@ -93,7 +93,66 @@ transforms and an ensemble all moved AUC by < 0.01. First-fold AUC is only 0.61:
 - Accounts whose CSM has left the company (55 in the last run) stay in the output, flagged, for routing to a manager.
 *Cost:* alerts and the model can disagree, by design; the UI must show both.
 
+## D11. The Monday agent: deterministic, idempotent, never sends (day 4)
+- `python -m agent.run --asof <Monday>` scores everyone renewing in 26 weeks, diffs against the previous Monday, queues drafts, and records
+  an `agent.run` row. `python -m agent.scheduler --once [--catch-up N]` is the cron entry: it finds the latest Monday whose 06:00 UTC has
+  passed and runs it only if no `ok` run exists, so an hourly cron is safe; a file lock stops overlapping invocations. It ran unattended
+  here for 5 consecutive Mondays (28 Sep to 26 Oct).
+- **Nothing is sent.** The agent writes `pending` drafts into a queue a human approves. Customer emails go only to red accounts whose CSM
+  is still employed, to the champion (else decision maker, else any contact) and never to an address that has bounced. Accounts whose CSM
+  left get a routing note for a manager instead of a customer email. Customer emails never mention scores, risk or churn (tested).
+- **Drafts are templates over stored numbers, not LLM text.** Every figure and date in a draft is rendered from `reasons`, which is saved
+  with the draft; a test fails if a draft contains a number that is not in its own reasons, and driver/alert sentences are quoted verbatim
+  from `score.account_score`. An LLM rewrite step could be plugged in after rendering and is OFF by default; if added, it must be
+  re-verified against `reasons`, because that is exactly where hallucinated numbers would enter.
+- Idempotent: the same Monday replaces its own changes, cannot duplicate a draft (unique key + dedupe), and never touches a draft a human
+  has decided. All agent writes are ONE transaction (tested: a bad row rolls back the run row, changes and drafts together). A failure is
+  recorded in `agent.run` as `failed` with the error and a non-zero exit; a hard kill leaves no row, which the scheduler treats as "not done".
+- Dedupe: no new draft for an (account, kind) with a pending/approved/sent draft in the last 14 days. A pending draft older than that is
+  **superseded** (marked rejected by `agent:superseded`) and replaced by a fresh one, so the queue never holds two open drafts for the same
+  thing and never shows week-old text. Superseded drafts still count for dedupe, so re-running an old Monday reproduces the same queue.
+- The first run is a baseline with no changes (nothing to compare to). Risk-jump changes are suppressed when the model changed between the
+  two runs, since the numbers are then not comparable. Changes are informational; drafts follow from the current band, not from changes.
+*Limits:* (1) an unreviewed queue refreshes every 14 days, so draft volume arrives in bursts (449, 60, 403, 102, 372 in the demo history)
+because nobody approved anything; in real use reviewers act within days and the bursts shrink to the genuinely new. (2) The demo history was
+scored by the final model (trained through 13 Oct), so the earlier Mondays use a model that has seen later outcomes: it demonstrates the
+agent, it is not a backtest (see scoring/PLANTED_CASES.txt for that). (3) Customer emails are generic check-ins: no product-specific
+content, no timezone or send-window logic, no unsubscribe handling. (4) A rejected draft by a human does not block the next one.
+
+## D12. Tenant isolation in the database, not only in the application (day 4)
+- Two roles. The pipeline role owns the tables and sees every tenant. The web app connects as `fello_app`: not superuser, no BYPASSRLS, no
+  CREATEROLE, cannot become the pipeline role (all asserted in a test). After connecting, the app runs `set_config('app.tenant_id', ...)`.
+- Row-level security on `score.account_score`, `agent.change`, `agent.draft`: `tenant_id = current_setting('app.tenant_id', true)`. Unset or
+  bogus tenant gives zero rows (never "all"), because `current_setting(..., true)` is NULL and NULL never matches.
+- `score.run` and `agent.run` have no tenant column (a run spans tenants), so their policy is "visible only if the caller can see at least one
+  scored row of that run": the tenant filter does the work and a run row cannot leak. Failed runs with no scores stay operator-only.
+- Grants are minimal: SELECT on score/agent tables, and UPDATE only on `agent.draft(status, decided_by, decided_at, edited_body)`. No INSERT,
+  DELETE, no access to `core`, `stg`, `raw`, or `er`, and it cannot change `tenant_id`, `body`, or `reasons`, or disable the policies.
+- Tested as the real role, by: counting other tenants' rows, guessing ids, an account id that exists in two tenants, joins, UNION, subqueries,
+  injection-style tenant names, and trying to UPDATE another tenant's draft. `python -m agent.security` applies everything idempotently.
+- **FORCE row-level security is on the `agent.*` tables but not on `score.account_score`:** Postgres refuses `COPY FROM` on a table with forced
+  RLS, and the scorer's loader uses COPY. The pipeline role therefore bypasses RLS on `score.*` as an owner; `fello_app` is bound either way.
+  Fix when it matters: stage then INSERT in `scoring.score.persist`, then add FORCE.
+*Honest limit:* RLS defends against a query that forgets its tenant filter, which is the common failure. It does NOT defend against an app
+that is compromised or wrong about who the user is: anything holding the `fello_app` connection can call `set_config` with another tenant.
+Real defence in depth is a per-tenant role or a signed, short-lived tenant claim checked in a `SECURITY DEFINER` function, plus the
+app's own authorisation. The model is also one global model across tenants (not isolated); features and scores are.
+
 ## Deliberately not done yet
 - Staging/dedupe, entity resolution, features, model, scoring store, agent, UI, tenant isolation (RLS): days 2 to 4.
 - No partitioning or incremental-by-watermark loading: 290k rows load in seconds. First thing to change at 10x is to
   partition `raw.product_events` by month and load by `synced_at` watermark instead of re-reading whole files.
+
+## D13. The CSM interface: standard library, server-rendered, no send path (day 5)
+- `ui/` is a stdlib HTTP server rendering HTML: no framework to install (PyPI is blocked here, and there is nothing a CSM needs from one).
+  Database access sits behind one function (`ui/db.py: query(sql, params, tenant_id)`); a psql driver locally, a psycopg driver deployed.
+- Tenant safety in three layers: the session decides the tenant (never the URL or form), every SQL statement filters on it anyway, and
+  the app connects as `fello_app` where Postgres row-level security enforces it. The restricted-role test caught a real bug the owner
+  role had hidden: the "latest run" lookup carried no tenant, so under RLS every page said "no scores yet".
+- A CSM sees only their own accounts and drafts (404, not 403, for anyone else's). Managers see their whole tenant.
+- The app cannot send email: approving a draft only changes its status (tested by scanning the code for any mail/network client).
+  The agent drafts, a person decides, a person sends.
+- Alerts are shown first and the row number is the *priority* (model score, lifted by any alert), so number, band and order agree;
+  the account page shows both numbers and says why they differ.
+- Drafts replaced by a newer one for the same account and kind are hidden, with a count. The agent should expire them itself.
+*Cost:* server-rendered pages reload on every action; fine for a weekly list of ~50 accounts, wrong for a live dashboard.
