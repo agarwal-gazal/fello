@@ -1,0 +1,26 @@
+flowchart LR
+  subgraph SRC["Five source systems (3 tenants)"]
+    SF[Salesforce]:::s
+    ST[Stripe]:::s
+    ZD[Zendesk]:::s
+    PR[Product events]:::s
+    GM[Gmail]:::s
+  end
+  RAW["raw.*<br/>verbatim jsonb<br/>append-only, idempotent<br/>synced_at = knowledge time"]
+  STG["stg.*<br/>typed, deduplicated<br/>test and internal rows flagged"]
+  ER["er.*<br/>one account id<br/>method + confidence + conflict"]
+  CORE["core.*<br/>every fact keyed by account<br/>renewal labels from Stripe"]
+  FEAT["feat.training<br/>point-in-time features<br/>known_at less than or equal to snapshot"]
+  MOD["model<br/>logistic regression<br/>walk-forward backtest"]
+  SCORE["score.*<br/>risk, band, reasons,<br/>alerts, full inputs"]
+  AGENT["agent.*<br/>Monday run, changes,<br/>drafts: pending only"]
+  UI["ui<br/>My week, account page,<br/>approval queue, manager view"]
+  GT[("ground_truth<br/>answer key<br/>evaluation only")]:::gt
+  SRC --> RAW --> STG --> ER --> CORE --> FEAT --> MOD
+  CORE --> SCORE
+  MOD --> SCORE --> AGENT --> UI
+  SCORE --> UI
+  GT -. "scores ER, labels, planted cases" .-> ER
+  GT -.-> MOD
+  classDef s fill:#e8f1f2,stroke:#0b3c49,color:#0b3c49
+  classDef gt fill:#fff,stroke:#999,stroke-dasharray:4 3,color:#666
