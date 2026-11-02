@@ -1,0 +1,6 @@
+# Pinned to what the model and the generator were built with. The pickled model needs the SAME scikit-learn; the data generator's
+# random streams are only stable within one numpy version.
+numpy==2.5.3
+pandas==3.0.5
+scikit-learn==1.9.1
+psycopg[binary]>=3.2,<4          # the web app's driver (DB_DRIVER=psycopg); locally the app uses the psql command instead

@@ -1,0 +1,33 @@
+# Render Blueprint. Create it with: Render dashboard -> New -> Blueprint -> pick the repository (it finds this file if you copy it to
+# the repository root as render.yaml, or point the Blueprint at deploy/render.yaml).
+services:
+  - type: web
+    name: account-health
+    runtime: docker
+    dockerfilePath: ./deploy/Dockerfile
+    dockerContext: .
+    plan: free                                   # free web services sleep after 15 minutes idle; the first request then takes ~1 minute
+    healthCheckPath: /healthz
+    envVars:
+      - key: APP_DATABASE_URL                    # the RESTRICTED role (fello_app), never the owner URL; the web app must not hold the owner password
+        sync: false
+      - key: SECRET_KEY                          # signs session cookies; Render generates it once
+        generateValue: true
+      - key: DB_DRIVER
+        value: psycopg
+      - key: UI_SECURE_COOKIES
+        value: "1"
+      - key: SHOW_DEMO_HINT                      # shows the demo usernames on the login page; remove for anything but a review
+        value: "1"
+
+  # The Monday agent. Render cron jobs are a paid feature; if you stay on the free tier use deploy/weekly-agent.github-actions.yml instead.
+  - type: cron
+    name: monday-agent
+    runtime: docker
+    dockerfilePath: ./deploy/Dockerfile
+    dockerContext: .
+    schedule: "0 1 * * 1"                        # Mondays 01:00 UTC = 06:30 in India. Safe to run more often: finished Mondays are skipped.
+    dockerCommand: python -m agent.scheduler --once --now wall --catch-up 2
+    envVars:
+      - key: DATABASE_URL                        # the OWNER url (the agent writes scores, changes and drafts)
+        sync: false
