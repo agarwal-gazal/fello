@@ -146,6 +146,25 @@ class UITests(unittest.TestCase):
     def status_of(self, subject):
         return sql(f"select status from agent.draft where subject = '{subject}'")
 
+    def test_a_monday_the_agent_failed_on_is_not_shown_as_current(self):
+        """Scores are saved before the agent writes changes and drafts. If the agent then fails, that Monday's scores exist but
+        must not replace the last Monday that completed."""
+        cols = ("run_id, tenant_id, account_id, renewal_date, renewal_source, weeks_to_renewal, risk, priority, band, rank_in_csm, owner_id, "
+                "csm_name, csm_active, data_note, account_name, segment, drivers, protective, alerts, concept_effects, features")
+        sql("insert into score.run (run_id, asof, model_sha, trained_through, n_scored) values ('20261102-t','2026-11-02 06:00+00','testsha','2026-10-01',1)")
+        sql(f"insert into score.account_score ({cols}) values " + score_row("20261102-t", "tnt_lumen", "a9", "Newer Failed Co", "o1", "Alice", "red", 0.9))
+        sql("insert into agent.run (run_id, asof, score_run_id, status, error) values ('agent-20261102','2026-11-02 06:00+00','20261102-t','failed','boom')")
+        try:
+            st, body, _, _ = self.client("alice").request("GET", "/")
+            self.assertEqual(200, st)
+            self.assertNotIn("Newer Failed Co", body)
+            self.assertIn("Acme Lumen", body)
+            sql("update agent.run set status = 'ok', error = null where run_id = 'agent-20261102'")      # a re-run repairs it
+            self.assertIn("Newer Failed Co", self.client("alice").request("GET", "/")[1])
+        finally:
+            sql("delete from agent.run where run_id = 'agent-20261102'; delete from score.account_score where run_id = '20261102-t'; "
+                "delete from score.run where run_id = '20261102-t'")
+
     # ------------------------------------------------------------------------------------------------------------ access
     def test_every_page_requires_login(self):
         c = Client(self.port)

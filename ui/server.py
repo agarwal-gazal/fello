@@ -39,8 +39,22 @@ def clean(r: dict) -> dict:
     return r
 
 
+LATEST_OK = ("select s.run_id, s.asof::text as asof, s.model_sha, s.trained_through from score.run s "
+             "where exists (select 1 from agent.run a where a.score_run_id = s.run_id and a.status = 'ok') order by s.asof desc limit 1")
+
+
 def latest_run(tenant_id: str):
-    rows = query(LATEST, {}, tenant_id)          # tenant set: under row-level security a run is visible only through that tenant's scores
+    """Newest Monday the agent FINISHED. Scores are saved before the agent writes its changes and drafts, so a run that failed in
+    between must not be shown as current. Falls back to the newest score run only when the agent has never run at all."""
+    try:
+        rows = query(LATEST_OK, {}, tenant_id)       # tenant set: under row-level security a run is visible only through that tenant's scores
+        if rows:
+            return rows[0]
+        if query("select 1 from agent.run limit 1", {}, tenant_id):
+            return None                              # the agent has run, but nothing finished successfully for this tenant
+    except Exception:                                # agent tables missing or unreadable: show scores without agent features
+        pass
+    rows = query(LATEST, {}, tenant_id)
     return rows[0] if rows else None
 
 

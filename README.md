@@ -17,7 +17,7 @@ One-page brief (written before the code): <https://claude.ai/artifact/HdLmEZf2Ex
 | Planted-case backtest (the two lost renewals) | Built, results below |
 | Monday agent (`agent.*`), approval queue | Built, tested (18 tests). Section 8. |
 | Tenant isolation with Postgres row-level security | Built, tested (11 tests). Section 9 lists what is not covered. |
-| CSM interface (`ui.server`) | Built, tested (17 tests), screenshots in `ui/screens/`. Section 10. |
+| CSM interface (`ui.server`) | Built, tested (18 tests), screenshots in `ui/screens/`. Section 10. |
 | Live deployment | **Not deployed.** Runs locally. Deploy files and steps are in `deploy/`. Section 11. |
 | Loom walkthrough | Not recorded yet. |
 
@@ -160,7 +160,7 @@ Facts worth knowing:
 - **Re-running a Monday is safe.** Rows are replaced by run id, a unique key stops duplicate drafts, and drafts a person already decided are never touched. A draft for the same account and kind inside 14 days is not repeated. An unreviewed draft older than that is marked rejected by `agent:superseded` and replaced.
 - **The writes to `agent.*` happen in one transaction.** A test checks that a write failing halfway leaves nothing behind.
 - **Failures are loud.** An exception is stored in `agent.run` as `failed` with the error, the process exits non-zero, and a later re-run repairs it.
-- **Known gap:** scoring is saved *before* that transaction. If the agent fails after scoring, the new scores exist and the web app shows them, with no changes or drafts for that Monday until a re-run. A failure before scoring (for example a missing model file) leaves the earlier run as the newest. The fix is to show only runs whose `agent.run` status is `ok`.
+- **A failed Monday is not shown as current.** Scoring is saved before the agent's own transaction. If the agent fails in between, those scores exist, but the web app shows only the newest Monday whose `agent.run` status is `ok` (tested). A re-run repairs it.
 - **The scheduler** works out the latest Monday and runs it only if no `ok` run exists, takes a local file lock, and `--catch-up N` runs missed Mondays oldest first. It uses the data export time as "now" unless `--now wall` is passed, because the data is a frozen export.
 - **Draft volume comes in bursts.** In the demo history, nobody approved anything, so the queue reached 449 drafts in one week. There is no cap per CSM yet.
 - The earlier Mondays in the demo history were scored with the final model, which has seen later outcomes. That history shows the agent working, not a backtest.
