@@ -101,7 +101,7 @@ make planted    # would the system have caught the two lost renewals?
 make test       # all tests; needs a scratch DB at postgresql://fello:fello@localhost/fello_test
 ```
 
-Timings are from a 2-core sandbox at the data size above. `make test` runs the whole suite (89 tests when I last ran it, all passing, about 4 minutes; the agent, security and UI tests are extra). Several test classes build their own small dataset end to end.
+Timings are from a 2-core sandbox at the data size above. `make test` runs the whole suite (89 tests when I last ran it, all passing, about 4 minutes, including the agent, security and UI tests). Several test classes build their own small dataset end to end.
 
 Agent, scheduler and UI commands: sections 8 and 10.
 
