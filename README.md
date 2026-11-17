@@ -100,7 +100,18 @@ make planted    # would the system have caught the two lost renewals?
 make test       # all tests; needs a scratch DB at postgresql://fello:fello@localhost/fello_test
 ```
 
-Timings are from a 2-core sandbox at the data size above. `make test` runs the whole suite (89 tests when I last ran it, all passing, about 4 minutes, including the agent, security and UI tests). Several test classes build their own small dataset end to end.
+Local setup on a Mac, matching CI (Postgres 16, Python 3.13, the pinned versions in `deploy/requirements.txt`, which the pickled model needs):
+
+```
+brew install postgresql@16 python@3.13 && brew services start postgresql@16
+export PATH="/opt/homebrew/opt/postgresql@16/bin:$PATH"      # the code calls the psql command
+psql postgres -c "create role fello login superuser password 'fello'"   # superuser: the tests create the fello_app role
+createdb -O fello fello_health && createdb -O fello fello_test
+python3.13 -m venv .venv && .venv/bin/pip install -r deploy/requirements.txt
+source .venv/bin/activate && make test
+```
+
+Timings are from a 2-core sandbox at the data size above. `make test` runs the whole suite (93 tests when I last ran it, all passing, about 2 minutes on an Apple-silicon Mac, including the agent, security and UI tests). Several test classes build their own small dataset end to end.
 
 Agent, scheduler and UI commands: sections 8 and 10.
 

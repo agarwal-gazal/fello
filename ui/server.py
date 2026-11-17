@@ -24,6 +24,7 @@ from .db import DBError, columns, j, query, table_exists
 SECURE = os.environ.get("UI_SECURE_COOKIES") == "1"
 SHOW_HINT = os.environ.get("SHOW_DEMO_HINT") == "1"
 ATTEMPTS: dict = defaultdict(list)
+DECIDED_SHOWN = 300                                # approved/rejected drafts kept on the queue page, newest first
 LATEST = "select run_id, asof::text as asof, model_sha, trained_through from score.run order by asof desc limit 1"
 ACCT_COLS = ("account_id, account_name, band, risk, priority, weeks_to_renewal, renewal_date::text as renewal_date, renewal_source, data_note, "
              "csm_active, csm_name, owner_id, segment, drivers::text as drivers, protective::text as protective, alerts::text as alerts, features::text as features")
@@ -106,7 +107,11 @@ def drafts(user, run, account_id=None, only_status=None):
     meta = draft_meta()
     if not meta:
         return None, []
-    rows = query("select to_jsonb(d)::text as r from agent.draft d where d.tenant_id = %(t)s order by 1 desc limit 300", {"t": user["tenant_id"]}, user["tenant_id"])
+    # EVERY pending draft (one left out could be neither seen nor approved), plus the most recent decided ones for history
+    idc, newest_first = meta["id"], ("created_at desc, " if "created_at" in meta["cols"] else "") + meta["id"] + " desc"
+    rows = query(f"""select to_jsonb(d)::text as r from agent.draft d where d.tenant_id = %(t)s and (d.status = 'pending' or d.{idc} in
+                     (select {idc} from agent.draft where tenant_id = %(t)s and status <> 'pending' order by {newest_first} limit {DECIDED_SHOWN}))""",
+                 {"t": user["tenant_id"]}, user["tenant_id"])
     mine = {a["account_id"]: a["account_name"] for a in accounts(user, run)} if run else {}
     out = []
     for r in rows:

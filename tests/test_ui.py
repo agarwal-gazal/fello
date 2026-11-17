@@ -273,6 +273,20 @@ class UITests(unittest.TestCase):
         self.assertNotIn(SCRIPT, page)
         self.assertIn("&lt;script&gt;", page)
 
+    def test_a_long_decided_history_never_pushes_pending_drafts_off_the_queue(self):
+        from ui import server
+        n = server.DECIDED_SHOWN + 50
+        sql("insert into agent.draft (run_id, tenant_id, account_id, owner_id, kind, subject, body, status, reasons, created_at) "
+            f"select 'agent-20261019', 'tnt_lumen', 'hist' || g, 'o2', 'csm_note', 'History ' || g, 'zzz decided ' || g, 'rejected', '{{}}', "
+            f"'2026-10-27 06:00+00' from generate_series(1, {n}) g")
+        try:
+            alice = self.client("alice")
+            self.assertIn("Alice note", alice.request("GET", "/queue")[1])
+            self.assertEqual(303, alice.post(f"/queue/{self.draft_ids['Alice note']}", action="reject")[0])
+            self.assertEqual("rejected", self.status_of("Alice note"))
+        finally:
+            sql("delete from agent.draft where account_id like 'hist%'")
+
     def test_csrf_is_required_to_decide(self):
         c = self.client("alice")
         st, *_ = c.request("POST", f"/queue/{self.draft_ids['Alice note']}", {"action": "approve"})

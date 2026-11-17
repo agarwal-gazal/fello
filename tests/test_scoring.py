@@ -86,6 +86,15 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(before, q(f"select count(*) from score.account_score where run_id = '{self.run_id}'"))
         self.assertEqual("1", q(f"select count(*) from score.run where run_id = '{self.run_id}'"))
 
+    def test_a_persist_that_fails_halfway_keeps_the_previous_rows(self):
+        before = q(f"select count(*) from score.account_score where run_id = '{self.run_id}'")
+        broken = self.scored.copy()
+        broken["rank_in_csm"] = "not-an-int"                                    # passes pandas, rejected by COPY after the delete
+        with self.assertRaises(RuntimeError):
+            sc.persist(DB, ASOF, self.model, broken)
+        self.assertEqual(before, q(f"select count(*) from score.account_score where run_id = '{self.run_id}'"))
+        self.assertEqual("1", q(f"select count(*) from score.run where run_id = '{self.run_id}'"))
+
     def test_alert_respects_knowledge_time_and_never_changes_model_risk(self):
         T = lambda s: pd.Timestamp(s)
         tk = pd.DataFrame([{"tenant_id": "t", "account_id": "a", "created_at": T("2026-06-19 14:00"), "known_at": T("2026-06-21 07:00"),
