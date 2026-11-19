@@ -45,12 +45,14 @@ def clean(r: dict) -> dict:
 
 
 LATEST_OK = ("select s.run_id, s.asof::text as asof, s.model_sha, s.trained_through from score.run s "
-             "where exists (select 1 from agent.run a where a.score_run_id = s.run_id and a.status = 'ok') order by s.asof desc limit 1")
+             "where exists (select 1 from agent.run a where a.score_run_id = s.run_id and a.status = 'ok') "
+             "order by s.asof desc, s.created_at desc, s.run_id desc limit 1")
 
 
 def latest_run(tenant_id: str):
-    """Newest Monday the agent FINISHED. Scores are saved before the agent writes its changes and drafts, so a run that failed in
-    between must not be shown as current. Falls back to the newest score run only when the agent has never run at all."""
+    """Newest Monday the agent FINISHED. The agent writes a Monday's scores in the same transaction as its changes and drafts, but
+    scores can still exist without a finished agent run (`make score` by hand, or rows from before that change), and those must not
+    be shown as current. Falls back to the newest score run only when the agent has never run at all."""
     try:
         rows = query(LATEST_OK, {}, tenant_id)       # tenant set: under row-level security a run is visible only through that tenant's scores
         if rows:

@@ -111,7 +111,7 @@ python3.13 -m venv .venv && .venv/bin/pip install -r deploy/requirements.txt
 source .venv/bin/activate && make test
 ```
 
-Timings are from a 2-core sandbox at the data size above. `make test` runs the whole suite (115 tests when I last ran it, all passing, the UI suite once per database driver, about 2 minutes on an Apple-silicon Mac, including the agent, security and UI tests). Several test classes build their own small dataset end to end.
+Timings are from a 2-core sandbox at the data size above. `make test` runs the whole suite (117 tests when I last ran it, all passing, the UI suite once per database driver, about 2 minutes on an Apple-silicon Mac, including the agent, security and UI tests). Several test classes build their own small dataset end to end.
 
 Agent, scheduler and UI commands: sections 8 and 10.
 
@@ -169,9 +169,9 @@ Facts worth knowing:
 - **Drafts are templates, not an LLM.** Every sentence comes from the stored drivers and alerts of that score row. A test fails if a draft contains a number or date that is not in its stored `reasons`. An LLM rewrite step could be added later, but it would have to be re-checked against `reasons`.
 - **Drafts are always created `pending`.** A person approves or rejects in the web app. No code in the agent or the app sends email, and a test scans for it.
 - **Re-running a Monday is safe.** Rows are replaced by run id, a unique key stops duplicate drafts, and drafts a person already decided are never touched. A draft for the same account and kind inside 14 days is not repeated. An unreviewed draft older than that is marked rejected by `agent:superseded` and replaced.
-- **The writes to `agent.*` happen in one transaction.** A test checks that a write failing halfway leaves nothing behind.
+- **Everything a Monday run writes happens in one transaction**: its scores (`score.*`) and its changes, drafts and run row (`agent.*`). Tests check that a write failing halfway leaves nothing behind, and that a failed run publishes no scores.
 - **Failures are loud.** An exception is stored in `agent.run` as `failed` with the error, the process exits non-zero, and a later re-run repairs it.
-- **A failed Monday is not shown as current.** Scoring is saved before the agent's own transaction. If the agent fails in between, those scores exist, but the web app shows only the newest Monday whose `agent.run` status is `ok` (tested). A re-run repairs it.
+- **A failed Monday is not shown as current**, twice over. A failed agent run saves no scores (above), and the web app shows only the newest Monday whose `agent.run` status is `ok` (tested), which also covers scores written by `make score` by hand. A re-run repairs it. If one Monday has two score runs (a retrained model), the one written last is used, by the app and by the agent's comparison with last week.
 - **The scheduler** works out the latest Monday and runs it only if no `ok` run exists, takes a local file lock, and `--catch-up N` runs missed Mondays oldest first. It uses the data export time as "now" unless `--now wall` is passed, because the data is a frozen export.
 - **Draft volume comes in bursts.** In the demo history, nobody approved anything, so the queue reached 449 drafts in one week. There is no cap per CSM yet.
 - The earlier Mondays in the demo history were scored with the final model, which has seen later outcomes. That history shows the agent working, not a backtest.
@@ -202,7 +202,7 @@ The account page shows the stored score inputs. It does not list the underlying 
 
 **Not deployed.** The whole system runs locally (`make` targets), and the same pipeline runs in GitHub Actions. What exists:
 
-- `deploy/DEPLOY.md` has step-by-step instructions for a Neon database and a Render web service, with a `Dockerfile`, `render.yaml` and `bootstrap.sh` that builds everything inside an empty database. I could not test the Docker build, Render, Neon or the `psycopg` code path here. `bootstrap.sh` was tested against a local database at 5% scale (41 s).
+- `deploy/DEPLOY.md` has step-by-step instructions for a Neon database and a Render web service, with a `Dockerfile`, `render.yaml` and `bootstrap.sh` that builds everything inside an empty database. I could not test the Docker build, Render or Neon here. The `psycopg` code path is tested against a local Postgres: the whole UI suite runs once per driver. `bootstrap.sh` was tested against a local database at 5% scale (41 s).
 - `.github/workflows/ci.yml` runs the tests on each push. `.github/workflows/weekly-agent.yml` builds a smaller system in a throwaway database each Monday and runs the scheduler. It shows unattended operation but keeps no history between runs. I wrote both and they are untested until GitHub runs them.
 - The scheduler has run unattended locally for five consecutive Mondays (28 Sep to 26 Oct 2026), all `ok`. Calling it again does nothing.
 - Demo logins come from `python -m ui.seed`: `csm.lumen`, `csm.parcel`, `manager.lumen`, `manager.parcel`. The password comes from `DEMO_PASSWORD`; change it before sharing a URL.
