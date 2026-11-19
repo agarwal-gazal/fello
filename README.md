@@ -111,7 +111,7 @@ python3.13 -m venv .venv && .venv/bin/pip install -r deploy/requirements.txt
 source .venv/bin/activate && make test
 ```
 
-Timings are from a 2-core sandbox at the data size above. `make test` runs the whole suite (93 tests when I last ran it, all passing, about 2 minutes on an Apple-silicon Mac, including the agent, security and UI tests). Several test classes build their own small dataset end to end.
+Timings are from a 2-core sandbox at the data size above. `make test` runs the whole suite (115 tests when I last ran it, all passing, the UI suite once per database driver, about 2 minutes on an Apple-silicon Mac, including the agent, security and UI tests). Several test classes build their own small dataset end to end.
 
 Agent, scheduler and UI commands: sections 8 and 10.
 

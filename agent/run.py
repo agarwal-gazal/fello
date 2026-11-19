@@ -65,7 +65,8 @@ def _parse_stored(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def previous_run(db_url: str, asof: pd.Timestamp) -> tuple[str | None, str | None]:
-    out = psql(db_url, f"select run_id || '|' || model_sha from score.run where asof < '{asof:%Y-%m-%d} 00:00:00+00' order by asof desc limit 1")
+    out = psql(db_url, f"select run_id || '|' || model_sha from score.run where asof < '{asof:%Y-%m-%d} 00:00:00+00' "
+                     "order by asof desc, created_at desc, run_id desc limit 1")     # same choice as the UI's latest run (ui/server.py LATEST)
     return tuple(out.split("|")) if out else (None, None)
 
 

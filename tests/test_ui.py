@@ -287,6 +287,33 @@ class UITests(unittest.TestCase):
         finally:
             sql("delete from agent.draft where account_id like 'hist%'")
 
+    def test_pages_make_a_small_fixed_number_of_database_calls(self):
+        from unittest import mock
+        from ui import server
+        alice = self.client("alice")
+        # session user + latest run, then: list + changes | drafts meta + drafts + list | list + history + drafts meta + drafts
+        for path, budget in (("/", 4), ("/queue", 5), ("/account/a1", 6)):
+            with mock.patch.object(server, "query", wraps=server.query) as calls:
+                self.assertEqual(200, alice.request("GET", path)[0])
+            self.assertLessEqual(calls.call_count, budget, f"{path} made {calls.call_count} database calls")
+
+    def test_changes_shown_belong_to_the_run_on_screen_and_same_monday_runs_resolve_to_the_newest(self):
+        sql("insert into score.run (run_id, asof, model_sha, trained_through, n_scored, created_at) values "
+            "('20261102-old','2026-11-02 06:00+00','old','2026-10-01',1,'2026-11-02 07:00+00'),"
+            "('20261102-new','2026-11-02 06:00+00','new','2026-10-15',1,'2026-11-02 08:00+00')")
+        cols = ("run_id, tenant_id, account_id, renewal_date, renewal_source, weeks_to_renewal, risk, priority, band, rank_in_csm, owner_id, csm_name, "
+                "csm_active, data_note, account_name, segment, drivers, protective, alerts, concept_effects, features")
+        sql(f"insert into score.account_score ({cols}) values "
+            + ",".join(score_row(r, "tnt_lumen", "a1", "Acme Lumen", "o1", "Alice", "red", 0.4) for r in ("20261102-old", "20261102-new")))
+        sql("insert into agent.run (run_id, asof, score_run_id, status) values ('agent-20261102','2026-11-02 06:00+00','20261102-new','ok')")
+        try:
+            alice = self.client("alice")
+            self.assertIn("20261102-new", alice.request("GET", "/account/a1")[1], "the run written last wins a same-Monday tie")
+            self.assertNotIn("moved into", alice.request("GET", "/")[1], "last week's changes must not be shown as this week's")
+        finally:
+            sql("delete from agent.run where run_id = 'agent-20261102'; delete from score.account_score where run_id like '20261102-%'; "
+                "delete from score.run where run_id like '20261102-%'")
+
     def test_csrf_is_required_to_decide(self):
         c = self.client("alice")
         st, *_ = c.request("POST", f"/queue/{self.draft_ids['Alice note']}", {"action": "approve"})
@@ -370,6 +397,31 @@ class UITests(unittest.TestCase):
                              "the database itself must hide the other tenant even if the SQL forgot to filter")
         finally:
             os.environ.pop("APP_DATABASE_URL", None)
+
+
+try:
+    import psycopg  # noqa: F401
+except ImportError:                                                   # the build sandbox has no PyPI; CI and deploy install it
+    psycopg = None
+
+
+@unittest.skipIf(psycopg is None, "psycopg not installed (pip install -r deploy/requirements.txt)")
+class UITestsPsycopg(UITests):
+    """Every UI test again through the driver the deployed app uses (DB_DRIVER=psycopg, pooled connections)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._old_driver = os.environ.get("DB_DRIVER")
+        os.environ["DB_DRIVER"] = "psycopg"
+        super().setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        if cls._old_driver is None:
+            os.environ.pop("DB_DRIVER", None)
+        else:
+            os.environ["DB_DRIVER"] = cls._old_driver
 
 
 if __name__ == "__main__":
