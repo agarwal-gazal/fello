@@ -72,7 +72,9 @@ the export date re-scores the same data as of a later Monday; say so in the walk
 Locally the app talks to Postgres through the `psql` command (no packages needed; PyPI was blocked where this was built). Deployed, it uses
 `psycopg` (`DB_DRIVER=psycopg`, set in the Dockerfile). The whole difference lives in `ui/db.py`: `_run_psql` and `_run_psycopg` both
 implement `query(sql, params, tenant_id)` with the same return shape. Everything else in `ui/` is driver-agnostic. The psycopg path sets the
-tenant with `set_config(..., true)` inside the transaction, so it stays correct behind a pooled connection.
+tenant with `set_config(..., true)` inside the transaction, so it stays correct behind a pooled connection. It keeps up to `DB_POOL_SIZE`
+(default 8) idle connections for reuse instead of opening one per query, closes any connection that saw an error, and turns driver errors
+into the same `DBError` the psql path raises. The full UI test suite runs on both drivers (`tests/test_ui.py`, `UITestsPsycopg`).
 
 ## What was and was not tested
 Tested here: the web app (16 tests: login, signed cookies, tenant isolation, CSRF, approve/reject, escaping, no send path, and the whole

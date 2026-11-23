@@ -100,7 +100,18 @@ make planted    # would the system have caught the two lost renewals?
 make test       # all tests; needs a scratch DB at postgresql://fello:fello@localhost/fello_test
 ```
 
-Timings are from a 2-core sandbox at the data size above. `make test` runs the whole suite (89 tests when I last ran it, all passing, about 4 minutes, including the agent, security and UI tests). Several test classes build their own small dataset end to end.
+Local setup on a Mac, matching CI (Postgres 16, Python 3.13, the pinned versions in `deploy/requirements.txt`, which the pickled model needs):
+
+```
+brew install postgresql@16 python@3.13 && brew services start postgresql@16
+export PATH="/opt/homebrew/opt/postgresql@16/bin:$PATH"      # the code calls the psql command
+psql postgres -c "create role fello login superuser password 'fello'"   # superuser: the tests create the fello_app role
+createdb -O fello fello_health && createdb -O fello fello_test
+python3.13 -m venv .venv && .venv/bin/pip install -r deploy/requirements.txt
+source .venv/bin/activate && make test
+```
+
+Timings are from a 2-core sandbox at the data size above. `make test` runs the whole suite (117 tests when I last ran it, all passing, the UI suite once per database driver, about 2 minutes on an Apple-silicon Mac, including the agent, security and UI tests). Several test classes build their own small dataset end to end.
 
 Agent, scheduler and UI commands: sections 8 and 10.
 
@@ -158,9 +169,9 @@ Facts worth knowing:
 - **Drafts are templates, not an LLM.** Every sentence comes from the stored drivers and alerts of that score row. A test fails if a draft contains a number or date that is not in its stored `reasons`. An LLM rewrite step could be added later, but it would have to be re-checked against `reasons`.
 - **Drafts are always created `pending`.** A person approves or rejects in the web app. No code in the agent or the app sends email, and a test scans for it.
 - **Re-running a Monday is safe.** Rows are replaced by run id, a unique key stops duplicate drafts, and drafts a person already decided are never touched. A draft for the same account and kind inside 14 days is not repeated. An unreviewed draft older than that is marked rejected by `agent:superseded` and replaced.
-- **The writes to `agent.*` happen in one transaction.** A test checks that a write failing halfway leaves nothing behind.
+- **Everything a Monday run writes happens in one transaction**: its scores (`score.*`) and its changes, drafts and run row (`agent.*`). Tests check that a write failing halfway leaves nothing behind, and that a failed run publishes no scores.
 - **Failures are loud.** An exception is stored in `agent.run` as `failed` with the error, the process exits non-zero, and a later re-run repairs it.
-- **A failed Monday is not shown as current.** Scoring is saved before the agent's own transaction. If the agent fails in between, those scores exist, but the web app shows only the newest Monday whose `agent.run` status is `ok` (tested). A re-run repairs it.
+- **A failed Monday is not shown as current**, twice over. A failed agent run saves no scores (above), and the web app shows only the newest Monday whose `agent.run` status is `ok` (tested), which also covers scores written by `make score` by hand. A re-run repairs it. If one Monday has two score runs (a retrained model), the one written last is used, by the app and by the agent's comparison with last week.
 - **The scheduler** works out the latest Monday and runs it only if no `ok` run exists, takes a local file lock, and `--catch-up N` runs missed Mondays oldest first. It uses the data export time as "now" unless `--now wall` is passed, because the data is a frozen export.
 - **Draft volume comes in bursts.** In the demo history, nobody approved anything, so the queue reached 449 drafts in one week. There is no cap per CSM yet.
 - The earlier Mondays in the demo history were scored with the final model, which has seen later outcomes. That history shows the agent working, not a backtest.
@@ -191,7 +202,7 @@ The account page shows the stored score inputs. It does not list the underlying 
 
 **Not deployed.** The whole system runs locally (`make` targets), and the same pipeline runs in GitHub Actions. What exists:
 
-- `deploy/DEPLOY.md` has step-by-step instructions for a Neon database and a Render web service, with a `Dockerfile`, `render.yaml` and `bootstrap.sh` that builds everything inside an empty database. I could not test the Docker build, Render, Neon or the `psycopg` code path here. `bootstrap.sh` was tested against a local database at 5% scale (41 s).
+- `deploy/DEPLOY.md` has step-by-step instructions for a Neon database and a Render web service, with a `Dockerfile`, `render.yaml` and `bootstrap.sh` that builds everything inside an empty database. I could not test the Docker build, Render or Neon here. The `psycopg` code path is tested against a local Postgres: the whole UI suite runs once per driver. `bootstrap.sh` was tested against a local database at 5% scale (41 s).
 - `.github/workflows/ci.yml` runs the tests on each push. `.github/workflows/weekly-agent.yml` builds a smaller system in a throwaway database each Monday and runs the scheduler. It shows unattended operation but keeps no history between runs. I wrote both and they are untested until GitHub runs them.
 - The scheduler has run unattended locally for five consecutive Mondays (28 Sep to 26 Oct 2026), all `ok`. Calling it again does nothing.
 - Demo logins come from `python -m ui.seed`: `csm.lumen`, `csm.parcel`, `manager.lumen`, `manager.parcel`. The password comes from `DEMO_PASSWORD`; change it before sharing a URL.
@@ -213,7 +224,7 @@ Today: 290,245 rows across all sources (201,987 event rows, 129,792 of them prod
 
 In the order I expect things to fail:
 
-1. **`features.compute` is a per-account Python loop that builds events-by-snapshots boolean matrices for every window.** Cost grows with events per account times snapshots, not just with row count. At 1x an account has about 25 product events (the stream is sampled). With real, unsampled telemetry a large account has tens of thousands, and the matrices stop fitting in memory long before the totals look large. Fix: aggregate in SQL to account-day counts (keeping the arrival day as well, so `known_at` filtering still works), and compute windows from those.
+1. **`features.compute` is a per-account Python loop that builds events-by-snapshots boolean matrices for every window.** Cost grows with events per account times snapshots, not just with row count. At 1x an account has about 25 product events (the stream is sampled). With real, unsampled telemetry a large account has tens of thousands, and the matrices stop fitting in memory long before the totals look large. Fix: aggregate in SQL to account-day counts (keeping the arrival day as well, so `known_at` filtering still works), and compute windows from those. (The per-account pandas overhead is already gone: columns are parsed once per table and each account works on plain arrays, which cut `features.compute` on the full training set from 11.4 s to 1.8 s on an Apple-silicon Mac, with identical output. That does not change the matrix growth described here.)
 2. **Scoring loads every fact table into pandas on each run** (`load_tables`). Fine at 125k product events, not at real volume. Same fix: aggregate in the database, load only what the scored accounts need.
 3. **Everything is rebuilt from scratch.** At roughly 80 s end to end today, linear scaling would give about 13 minutes at 10x. That is tolerable weekly and unacceptable for fixing a bad load. The change is incremental builds by a `synced_at` watermark, and partitioning `raw.product_events` by month (D5).
 4. **Loader and reads go through `psql` and strings.** `\copy` is fast, but every read into pandas is a CSV round trip with everything parsed as text. A real driver and typed reads would be the first change.

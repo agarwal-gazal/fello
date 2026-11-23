@@ -24,8 +24,8 @@ from features import features
 from features.build_features import load_tables
 from model.design import design
 from model.explain import explain
-from resolve.io import read_df, write_df
-from ingest.load_raw import psql
+from resolve.io import read_df
+from ingest.load_raw import lit, psql
 from .alerts import alerts_for
 
 HORIZON_WEEKS = 26
@@ -107,13 +107,13 @@ create index if not exists account_score_owner on score.account_score (run_id, t
 """
 
 
-def persist(db_url: str, asof: pd.Timestamp, model: dict, scored: pd.DataFrame) -> str:
-    run_id = f"{asof:%Y%m%d}-{model['sha']}"
-    psql(db_url, DDL)
-    psql(db_url, f"delete from score.account_score where run_id = '{run_id}'; delete from score.run where run_id = '{run_id}'")
-    psql(db_url, f"insert into score.run (run_id, asof, model_sha, trained_through, n_scored) values "
-                 f"('{run_id}', '{asof:%Y-%m-%d} {RUN_HOUR:02d}:00+00', '{model['sha']}', '{model['trained_through']}', {len(scored)})")
-    d = pd.DataFrame({
+def run_id_for(asof: pd.Timestamp, model: dict) -> str:
+    return f"{asof:%Y%m%d}-{model['sha']}"
+
+
+def store_rows(run_id: str, scored: pd.DataFrame) -> pd.DataFrame:
+    """score.account_score rows exactly as they are written (rounded, JSON-encoded)."""
+    return pd.DataFrame({
         "run_id": run_id, "tenant_id": scored.tenant_id, "account_id": scored.account_id,
         "renewal_date": scored.renewal_date.dt.strftime("%Y-%m-%d"), "renewal_source": scored.renewal_source,
         "weeks_to_renewal": scored.weeks_to_renewal.round(2), "risk": scored.risk.round(5), "priority": scored.priority.round(5), "alerts": scored.alerts.map(json.dumps), "band": scored.band,
@@ -123,7 +123,21 @@ def persist(db_url: str, asof: pd.Timestamp, model: dict, scored: pd.DataFrame) 
         "drivers": scored.drivers.map(json.dumps), "protective": scored.protective.map(json.dumps),
         "concept_effects": scored.concept_effects.map(json.dumps),
         "features": scored.features.map(lambda r: json.dumps({k: (None if (isinstance(v, float) and np.isnan(v)) else v) for k, v in r.items()}))})
-    write_df(db_url, "score.account_score", d, "select 1")
+
+
+def persist_script(run_id: str, asof: pd.Timestamp, model: dict, rows: pd.DataFrame) -> str:
+    """Replace one run's rows. No begin/commit: the caller wraps it, so the agent can put it in its own transaction."""
+    return (f"delete from score.account_score where run_id = {lit(run_id)};\ndelete from score.run where run_id = {lit(run_id)};\n"
+            f"insert into score.run (run_id, asof, model_sha, trained_through, n_scored) values ({lit(run_id)}, "
+            f"'{asof:%Y-%m-%d} {RUN_HOUR:02d}:00+00', {lit(model['sha'])}, {lit(str(model['trained_through']))}, {len(rows)});\n"
+            f"\\copy score.account_score ({', '.join(rows.columns)}) from stdin with (format csv, header)\n{rows.to_csv(index=False)}\\.\n")
+
+
+def persist(db_url: str, asof: pd.Timestamp, model: dict, scored: pd.DataFrame) -> str:
+    """ONE transaction: a failure part way leaves the previous rows for this run_id exactly as they were."""
+    run_id = run_id_for(asof, model)
+    psql(db_url, DDL)
+    psql(db_url, f"begin;\n{persist_script(run_id, asof, model, store_rows(run_id, scored))}commit;\n")
     return run_id
 
 

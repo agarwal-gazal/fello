@@ -1,17 +1,19 @@
 """The Monday run:  python -m agent.run --asof 2026-10-26
 
-   1. score everyone renewing in 26 weeks as of that Monday (scoring.score; persisted with full inputs)
+   1. score everyone renewing in 26 weeks as of that Monday (scoring.score; stored with full inputs in step 4)
    2. diff against the previous Monday's stored scores
    3. draft CSM notes and customer emails into the approval queue (status 'pending'; the agent NEVER sends anything)
    4. record the run
 
 Safe to repeat: the same Monday replaces its own rows and cannot duplicate a draft (unique key + the 14-day dedupe), and drafts a human
-has already approved or rejected are never touched. Everything the agent writes goes in ONE transaction. A failure is written to
-agent.run as status 'failed' with the error, and the process exits non-zero: it is never silent.
+has already approved or rejected are never touched. Everything the agent writes, the week's scores included, goes in ONE transaction,
+so a failed run leaves the previous Monday as the latest one the UI shows. A failure is written to agent.run as status 'failed' with
+the error, and the process exits non-zero: it is never silent.
 """
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import os
 import sys
@@ -34,10 +36,24 @@ def run_id_for(asof: pd.Timestamp) -> str:
     return f"agent-{asof:%Y%m%d}"
 
 
+STORED_COLS = ["run_id", "tenant_id", "account_id", "owner_id", "csm_name", "csm_active", "account_name", "segment", "renewal_date",
+               "renewal_source", "weeks_to_renewal", "risk", "priority", "band", "rank_in_csm", "data_note", "alerts", "drivers", "protective"]
+
+
 def load_stored(db_url: str, score_run_id: str) -> pd.DataFrame:
     df = read_df(db_url, f"""select run_id, tenant_id, account_id, owner_id, csm_name, csm_active, account_name, segment, renewal_date::text renewal_date,
         renewal_source, weeks_to_renewal, risk, priority, band, rank_in_csm, data_note, alerts::text alerts, drivers::text drivers,
         protective::text protective from score.account_score where run_id = {lit(score_run_id)}""")
+    return _parse_stored(df)
+
+
+def stored_from_rows(rows: pd.DataFrame) -> pd.DataFrame:
+    """What load_stored would return once `rows` (scoring.score.store_rows) were written: the same CSV-of-text round trip, without the database."""
+    text = pd.read_csv(io.StringIO(rows[STORED_COLS].to_csv(index=False)), dtype=str, keep_default_na=False, na_values=[""])
+    return _parse_stored(text)
+
+
+def _parse_stored(df: pd.DataFrame) -> pd.DataFrame:
     for c in ("weeks_to_renewal", "risk", "priority"):
         df[c] = pd.to_numeric(df[c])
     df["rank_in_csm"] = pd.to_numeric(df.rank_in_csm).astype(int)
@@ -49,7 +65,8 @@ def load_stored(db_url: str, score_run_id: str) -> pd.DataFrame:
 
 
 def previous_run(db_url: str, asof: pd.Timestamp) -> tuple[str | None, str | None]:
-    out = psql(db_url, f"select run_id || '|' || model_sha from score.run where asof < '{asof:%Y-%m-%d} 00:00:00+00' order by asof desc limit 1")
+    out = psql(db_url, f"select run_id || '|' || model_sha from score.run where asof < '{asof:%Y-%m-%d} 00:00:00+00' "
+                     "order by asof desc, created_at desc, run_id desc limit 1")     # same choice as the UI's latest run (ui/server.py LATEST)
     return tuple(out.split("|")) if out else (None, None)
 
 
@@ -77,7 +94,8 @@ def _csv_block(table: str, df: pd.DataFrame, cols: list[str]) -> str:
 
 
 def write_all(db_url: str, rid: str, asof: pd.Timestamp, score_run_id: str, n_scored: int, started: str,
-              changes: pd.DataFrame, new_drafts: pd.DataFrame) -> None:
+              changes: pd.DataFrame, new_drafts: pd.DataFrame, score_script: str = "") -> None:
+    """score_script (scoring.score.persist_script) goes in the same transaction, so a failed run publishes no new scores either."""
     ch = changes.copy()
     ch.insert(0, "run_id", rid)
     ch["detail"] = ch.detail.map(json.dumps)
@@ -89,7 +107,7 @@ def write_all(db_url: str, rid: str, asof: pd.Timestamp, score_run_id: str, n_sc
             f"delete from agent.change where run_id = {lit(rid)}"]
     body[0] += ";"
     body[1] += ";"
-    script = "\n".join(body) + "\n"
+    script = score_script + "\n".join(body) + "\n"
     if len(ch):                                       # COPY into a forced-RLS table is refused by Postgres: stage, then INSERT
         script += ("create temp table _c (run_id text, tenant_id text, account_id text, kind text, from_band text, to_band text, "
                    "from_risk double precision, to_risk double precision, detail jsonb) on commit drop;\n")
@@ -126,18 +144,21 @@ def record_failure(db_url: str, asof: pd.Timestamp, error: str) -> None:
 def execute(db_url: str, asof: pd.Timestamp, model_path: str = DEFAULT_MODEL) -> dict:
     started = pd.Timestamp.now(tz="UTC").strftime("%Y-%m-%d %H:%M:%S+00")
     ensure_schema(db_url)
+    psql(db_url, sc.DDL)
     model = sc.load_model(model_path)
     pop = sc.population(db_url, asof)
     scored = sc.score(pop, asof, model, features.prepare(load_tables(db_url)))
-    score_run_id = sc.persist(db_url, asof, model, scored)
-    stored = load_stored(db_url, score_run_id)
+    score_run_id = sc.run_id_for(asof, model)
+    rows = sc.store_rows(score_run_id, scored)
+    stored = stored_from_rows(rows)                    # scores are written below, with everything else, in one transaction
 
     prev_id, prev_sha = previous_run(db_url, asof)
     prev = load_stored(db_url, prev_id) if prev_id else None
     changes = diff.compute(prev, stored, same_model=(prev_sha == model["sha"]))
     contacts, bounced = contact_maps(db_url, asof)
     new = drafts.generate(stored, changes, contacts, bounced, existing_drafts(db_url, asof), asof)
-    write_all(db_url, run_id_for(asof), asof, score_run_id, len(stored), started, changes, new)
+    write_all(db_url, run_id_for(asof), asof, score_run_id, len(stored), started, changes, new,
+              score_script=sc.persist_script(score_run_id, asof, model, rows))
     return {"run_id": run_id_for(asof), "score_run_id": score_run_id, "previous": prev_id, "n_scored": len(stored),
             "n_changes": len(changes), "n_new_drafts": len(new)}
 

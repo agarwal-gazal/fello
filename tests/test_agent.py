@@ -9,6 +9,7 @@ import pickle
 import re
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -200,6 +201,28 @@ class AgentTests(unittest.TestCase):
             agent_run.write_all(DB, "agent-20261130", pd.Timestamp("2026-11-30"), "sr", 1, "2026-11-30 06:00:00+00", changes, bad)
         self.assertEqual("0", q("select count(*) from agent.run where run_id = 'agent-20261130'"))
         self.assertEqual("0", q("select count(*) from agent.change where run_id = 'agent-20261130'"))
+
+    def test_a_failed_run_publishes_no_scores(self):
+        """The UI shows the latest score.run, so the agent's scores must commit together with its drafts, or not at all."""
+        bad = pd.DataFrame([dict(tenant_id="t", account_id="a", owner_id="o", kind="NOT_A_KIND", to_address=None, subject="s", body="b",
+                                 reasons={}, created_at="2026-09-14 06:00:00+00")])
+        with mock.patch("agent.drafts.generate", return_value=bad), self.assertRaises(RuntimeError):
+            agent_run.execute(DB, pd.Timestamp("2026-09-14"), self.model_path)
+        self.assertEqual("0", q("select count(*) from score.run where asof = '2026-09-14 06:00+00'"))
+        self.assertEqual("0", q("select count(*) from score.account_score where run_id like '20260914-%'"))
+        self.assertEqual("0", q("select count(*) from agent.run where run_id = 'agent-20260914'"))
+
+    def test_stored_rows_in_memory_match_what_the_database_returns(self):
+        sid = q("select score_run_id from agent.run where run_id = 'agent-20261005'")
+        from_db = agent_run.load_stored(DB, sid).sort_values(["tenant_id", "account_id"]).reset_index(drop=True)
+        model = pickle.loads(Path(self.model_path).read_bytes())
+        model["sha"] = sid.split("-", 1)[1]
+        asof = pd.Timestamp("2026-10-05")
+        from scoring import score as sc
+        from features import features
+        scored = sc.score(sc.population(DB, asof), asof, model, features.prepare(build_features.load_tables(DB)))
+        mem = agent_run.stored_from_rows(sc.store_rows(sid, scored)).sort_values(["tenant_id", "account_id"]).reset_index(drop=True)
+        pd.testing.assert_frame_equal(from_db[agent_run.STORED_COLS], mem[agent_run.STORED_COLS])
 
     # ------------------------------------------------------------------------------------------------------ scheduler
     def test_latest_monday(self):

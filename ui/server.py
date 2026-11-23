@@ -19,12 +19,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import auth, pages
-from .db import DBError, columns, j, query, table_exists
+from .db import DBError, j, query
 
 SECURE = os.environ.get("UI_SECURE_COOKIES") == "1"
 SHOW_HINT = os.environ.get("SHOW_DEMO_HINT") == "1"
 ATTEMPTS: dict = defaultdict(list)
-LATEST = "select run_id, asof::text as asof, model_sha, trained_through from score.run order by asof desc limit 1"
+DECIDED_SHOWN = 300                                # approved/rejected drafts kept on the queue page, newest first
+# two runs for the same Monday (a retrained model) -> the one written last; run_id breaks an exact tie so the choice is never arbitrary
+LATEST = "select run_id, asof::text as asof, model_sha, trained_through from score.run order by asof desc, created_at desc, run_id desc limit 1"
+# columns of agent.draft, in ONE round trip. No rows: the table does not exist. An error (no usage on the schema) is handled by the caller.
+DRAFT_META = """select string_agg(a.attname::text, ',' order by a.attnum) as cols, bool_and(has_table_privilege(a.attrelid, 'select')) as readable
+                from pg_attribute a where a.attrelid = to_regclass('agent.draft') and a.attnum > 0 and not a.attisdropped"""
 ACCT_COLS = ("account_id, account_name, band, risk, priority, weeks_to_renewal, renewal_date::text as renewal_date, renewal_source, data_note, "
              "csm_active, csm_name, owner_id, segment, drivers::text as drivers, protective::text as protective, alerts::text as alerts, features::text as features")
 
@@ -40,12 +45,14 @@ def clean(r: dict) -> dict:
 
 
 LATEST_OK = ("select s.run_id, s.asof::text as asof, s.model_sha, s.trained_through from score.run s "
-             "where exists (select 1 from agent.run a where a.score_run_id = s.run_id and a.status = 'ok') order by s.asof desc limit 1")
+             "where exists (select 1 from agent.run a where a.score_run_id = s.run_id and a.status = 'ok') "
+             "order by s.asof desc, s.created_at desc, s.run_id desc limit 1")
 
 
 def latest_run(tenant_id: str):
-    """Newest Monday the agent FINISHED. Scores are saved before the agent writes its changes and drafts, so a run that failed in
-    between must not be shown as current. Falls back to the newest score run only when the agent has never run at all."""
+    """Newest Monday the agent FINISHED. The agent writes a Monday's scores in the same transaction as its changes and drafts, but
+    scores can still exist without a finished agent run (`make score` by hand, or rows from before that change), and those must not
+    be shown as current. Falls back to the newest score run only when the agent has never run at all."""
     try:
         rows = query(LATEST_OK, {}, tenant_id)       # tenant set: under row-level security a run is visible only through that tenant's scores
         if rows:
@@ -91,23 +98,33 @@ def draft_meta():
     role (a grant lost after the agent recreated its schema), the pages that use them show their empty state and the cause goes to the log:
     drafts are optional, the weekly list must keep working."""
     try:
-        if not table_exists("agent.draft"):
-            return None
-        cols = columns("agent.draft")
-        query("select 1 from agent.draft limit 1", {}, None)
+        meta = query(DRAFT_META, {}, None)[0]
     except DBError as ex:
         sys.stderr.write(f"agent.draft unavailable: {ex}\n")
         return None
+    if not meta["cols"]:
+        return None
+    if meta["readable"] != "t":
+        sys.stderr.write("agent.draft unavailable: no select privilege for this role\n")
+        return None
+    cols = meta["cols"].split(",")
     idc = next((c for c in ("draft_id", "id") if c in cols), None)
     return {"cols": cols, "id": idc} if idc and "tenant_id" in cols and "status" in cols else None
 
 
-def drafts(user, run, account_id=None, only_status=None):
+def drafts(user, run, account_id=None, acct_rows=None):
+    """acct_rows: the caller's accounts() result when it already has one (it names, ranks and, for a CSM, scopes the drafts)."""
     meta = draft_meta()
     if not meta:
         return None, []
-    rows = query("select to_jsonb(d)::text as r from agent.draft d where d.tenant_id = %(t)s order by 1 desc limit 300", {"t": user["tenant_id"]}, user["tenant_id"])
-    mine = {a["account_id"]: a["account_name"] for a in accounts(user, run)} if run else {}
+    # EVERY pending draft (one left out could be neither seen nor approved), plus the most recent decided ones for history
+    idc, newest_first = meta["id"], ("created_at desc, " if "created_at" in meta["cols"] else "") + meta["id"] + " desc"
+    rows = query(f"""select to_jsonb(d)::text as r from agent.draft d where d.tenant_id = %(t)s and (d.status = 'pending' or d.{idc} in
+                     (select {idc} from agent.draft where tenant_id = %(t)s and status <> 'pending' order by {newest_first} limit {DECIDED_SHOWN}))""",
+                 {"t": user["tenant_id"]}, user["tenant_id"])
+    if acct_rows is None:
+        acct_rows = accounts(user, run) if run else []
+    mine = {a["account_id"]: a["account_name"] for a in acct_rows}
     out = []
     for r in rows:
         d = json.loads(r["r"])
@@ -128,25 +145,27 @@ def drafts(user, run, account_id=None, only_status=None):
         newest[k] = max(newest.get(k, ""), d["created_at"])
     for d in out:
         d["superseded"] = d["status"] == "pending" and d["created_at"] < newest[(d["account_id"], d["kind"])]
-    rank = {a["account_id"]: i for i, a in enumerate(accounts(user, run))} if run else {}      # accounts() is already highest priority first
+    rank = {a["account_id"]: i for i, a in enumerate(acct_rows)}      # accounts() is already highest priority first
     out.sort(key=lambda d: (d["status"] != "pending", rank.get(d["account_id"], 10 ** 6), d.get("kind") != "csm_note"))
     return meta, out
 
 
-def change_lines(user, run):
+def change_lines(user, run, acct_rows):
+    if not run:
+        return []
     try:
-        if not run or not table_exists("agent.change"):
-            return []
-        return _change_lines(user, run)
-    except DBError as ex:
+        return _change_lines(user, run, acct_rows)
+    except DBError as ex:                            # agent tables missing or not readable: the week page works without them
         sys.stderr.write(f"agent.change unavailable: {ex}\n")
         return []
 
 
-def _change_lines(user, run):
-    mine = {a["account_id"]: a["account_name"] for a in accounts(user, run)}
+def _change_lines(user, run, acct_rows):
+    mine = {a["account_id"]: a["account_name"] for a in acct_rows}
+    # the changes the agent computed for the run on screen; never an older week's (a week with no changes shows none)
     rows = query("""select to_jsonb(c)::text as r from agent.change c where c.tenant_id = %(t)s
-                    and c.run_id = (select max(run_id) from agent.change where tenant_id = %(t)s)""", {"t": user["tenant_id"]}, user["tenant_id"])
+                    and c.run_id in (select run_id from agent.run where score_run_id = %(r)s and status = 'ok')""",
+                 {"t": user["tenant_id"], "r": run["run_id"]}, user["tenant_id"])
     out = []
     for r in rows:
         d = json.loads(r["r"])
@@ -276,7 +295,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             if user["role"] == "manager":
                 return self.redirect("/team")
-            return self.send(200, pages.week(user, run, accounts(user, run) if run else [], change_lines(user, run), csrf))
+            rows = accounts(user, run) if run else []
+            return self.send(200, pages.week(user, run, rows, change_lines(user, run, rows), csrf))
         if path == "/queue":
             meta, ds = drafts(user, run)
             return self.send(200, pages.queue(user, ds, meta is not None, csrf, parse_qs(urlparse(self.path).query).get("done", [""])[0][:80]))
@@ -300,7 +320,7 @@ class Handler(BaseHTTPRequestHandler):
                                 where a.tenant_id = %(t)s and a.account_id = %(a)s order by r.asof desc limit 12""",
                              {"t": user["tenant_id"], "a": a["account_id"]}, user["tenant_id"])
                 pts = [(h["asof"], float(h["risk"])) for h in reversed(hist)]
-                _, ds = drafts(user, run, account_id=a["account_id"])
+                _, ds = drafts(user, run, account_id=a["account_id"], acct_rows=found)
                 live = [d for d in ds or [] if d["status"] in ("pending", "approved") and not d["superseded"]]
                 return self.send(200, pages.account(user, run, a, pts, live, csrf))
         return self.send(404, pages.message(user, "Page not found", "That account does not exist, or it is not one of yours.", csrf))
